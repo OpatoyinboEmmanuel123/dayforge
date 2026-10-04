@@ -1,0 +1,2444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DayForge</title>
+<meta name="theme-color" content="#0E1116">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="DayForge">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>html,body{margin:0;background:#0E1116;color:#E9ECF1;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}#boot{padding:32px 20px;color:#98A2B1}</style>
+<script type="importmap">
+{"imports":{
+"react":"https://esm.sh/react@18.3.1",
+"react-dom/client":"https://esm.sh/react-dom@18.3.1/client?external=react",
+"lucide-react":"https://esm.sh/lucide-react@0.383.0?external=react"
+}}
+</script>
+</head>
+<body>
+<div id="root"><p id="boot">Loading DayForge…</p></div>
+<noscript><p style="padding:20px">DayForge needs JavaScript turned on.</p></noscript>
+<script>setTimeout(function(){var b=document.getElementById("boot");if(b){b.textContent="DayForge couldn't load. Check your internet connection and reload. Your saved data is not affected."}},12000)</script>
+<script type="module">
+import { createRoot } from "react-dom/client";
+import React, { useState, useEffect, useMemo, useRef, useCallback, useContext, createContext } from "react";
+import { Sun, CalendarDays, Target, BarChart3, NotebookPen, Settings as SettingsIcon, Check, X, Plus, Pencil, SkipForward, Clock, ChevronRight, ChevronLeft, Sparkles, RefreshCw, Trash2, Smartphone, AlertTriangle, Flame, Moon, Sunrise, BatteryLow, BatteryMedium, BatteryFull, GraduationCap, Briefcase, TrendingUp, BookOpen, Dumbbell, Brain, Utensils, BedDouble, Gamepad2, Car, MapPin, Lightbulb, Leaf, Users, Undo2, CheckCircle2, ListChecks, Wand2, } from "lucide-react";
+/* ==========================================================================
+   DayForge — Plan your day. Build yourself.
+
+   Architecture (single file so it renders as an artifact):
+   1. Types (JSDoc)            – mirrored in types.ts for the real project
+   2. Helpers                  – time math, dates
+   3. Planner engine           – deterministic rules engine (NO AI API is connected)
+   4. Behavior analysis        – learns from completed/skipped items + journal
+   5. aiService                – the seam where a real AI API plugs in later
+   6. UI primitives, screens, App shell
+   ========================================================================== */
+/**
+ * @typedef {"school"|"work"|"appointment"|"event"|"errand"|"travel"|"forex"|"reading"|"fitness"|"growth"|"business"|"social"|"rest"|"leisure"|"meals"|"routine"|"sleep"} Category
+ * @typedef {{id:string,start:number,end:number,title:string,category:Category,note:string,status:"pending"|"done"|"skipped",fixed:boolean,estimate:boolean}} ScheduleItem
+ * @typedef {{id:string,date:string,objective:string,mode:"full"|"light"|"minimum",energy:string,wake:number,bed:number,sleepMin:number,items:ScheduleItem[],priorities:string[],forexTask:object,readingTask:object,fitnessTask:object,phoneRule:string,nightReview:string[],rule:string,notes:string[],warnings:string[],accepted:boolean}} DayPlan
+ * @typedef {{id:string,title:string,why:string,targetDate:string,weeklyTarget:number,unit:string,total:number,dailyTarget:string,habits:string[],log:{date:string,amount:number}[]}} Goal
+ * @typedef {{date:string,accomplished:string,unfinished:string,wentWrong:string,learned:string,energy:string,rules:string,improve:string,actualBed:string,summary:object|null}} JournalEntry
+ */
+/* ----------------------------- constants ----------------------------- */
+const DAY = 1440;
+const STORAGE_KEY = "dayforge:v1";
+const CATS = {
+    school: { label: "School", Icon: GraduationCap, color: "#7BA7F2" },
+    work: { label: "Work", Icon: Briefcase, color: "#9AA6B8" },
+    appointment: { label: "Appointment", Icon: MapPin, color: "#D58BE0" },
+    event: { label: "Event", Icon: CalendarDays, color: "#9BCB6A" },
+    errand: { label: "Errand", Icon: ListChecks, color: "#E6B07A" },
+    travel: { label: "Travel", Icon: Car, color: "#A38F7A" },
+    forex: { label: "Forex", Icon: TrendingUp, color: "#4FC3A1" },
+    reading: { label: "Reading", Icon: BookOpen, color: "#B896F0" },
+    fitness: { label: "Fitness", Icon: Dumbbell, color: "#F08A6E" },
+    growth: { label: "Personal growth", Icon: Brain, color: "#E8B64C" },
+    business: { label: "Business", Icon: Lightbulb, color: "#E58BB1" },
+    social: { label: "Relationships", Icon: Users, color: "#F2A66B" },
+    rest: { label: "Rest", Icon: Leaf, color: "#7FB7A4" },
+    leisure: { label: "Leisure", Icon: Gamepad2, color: "#6FCBDB" },
+    meals: { label: "Meals", Icon: Utensils, color: "#C7B58C" },
+    routine: { label: "Routine", Icon: Sunrise, color: "#8C96A8" },
+    sleep: { label: "Sleep", Icon: BedDouble, color: "#6F7FD1" },
+};
+const GOAL_OPTIONS = [
+    { key: "forex", label: "Forex" },
+    { key: "reading", label: "Reading" },
+    { key: "exercise", label: "Exercise" },
+    { key: "school", label: "School" },
+    { key: "business", label: "Business" },
+    { key: "growth", label: "Personal development" },
+    { key: "social", label: "Relationships" },
+    { key: "rest", label: "Rest" },
+];
+const COMMIT_TYPES = [
+    { key: "school", label: "School", start: "08:00", end: "14:00" },
+    { key: "work", label: "Work", start: "09:00", end: "17:00" },
+    { key: "appointment", label: "Appointment", start: "15:00", end: "16:00" },
+    { key: "event", label: "Event", start: "18:00", end: "19:30" },
+    { key: "errand", label: "Errand", start: "16:00", end: "16:45" },
+    { key: "travel", label: "Travel", start: "12:00", end: "13:00" },
+];
+const TRAVEL_DEFAULT = { school: 25, work: 25, appointment: 20, event: 20, errand: 15, travel: 0 };
+const NIGHT_REVIEW = [
+    "What did I accomplish?",
+    "What did I fail to accomplish?",
+    "Why?",
+    "Did I follow my trading rules?",
+    "What should I improve tomorrow?",
+];
+/* ------------------------------- helpers ------------------------------ */
+const pad = (n) => String(n).padStart(2, "0");
+const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
+const uid = () => Math.random().toString(36).slice(2, 10);
+const toMin = (hhmm) => {
+    const [h, m] = String(hhmm || "0:0").split(":").map(Number);
+    return (h || 0) * 60 + (m || 0);
+};
+const toHHMM = (min) => {
+    const m = ((Math.round(min) % DAY) + DAY) % DAY;
+    return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+};
+const fmtTime = (min, f = "12h") => {
+    const m = ((Math.round(min) % DAY) + DAY) % DAY;
+    const h = Math.floor(m / 60), mm = m % 60;
+    if (f === "24h")
+        return `${pad(h)}:${pad(mm)}`;
+    return `${h % 12 === 0 ? 12 : h % 12}:${pad(mm)} ${h >= 12 ? "PM" : "AM"}`;
+};
+const fmtDur = (min) => {
+    const h = Math.floor(min / 60), m = Math.round(min % 60);
+    if (!h)
+        return `${m} min`;
+    if (!m)
+        return `${h} h`;
+    return `${h} h ${m} min`;
+};
+const dateKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseKey = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
+const addDays = (k, n) => { const d = parseKey(k); d.setDate(d.getDate() + n); return dateKey(d); };
+const longDate = (k) => parseKey(k).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+const shortDate = (k) => parseKey(k).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const weekdayShort = (k) => parseKey(k).toLocaleDateString(undefined, { weekday: "short" });
+const dayIndex = (k) => Math.floor(parseKey(k).getTime() / 86400000);
+const pick = (list, n) => list[((n % list.length) + list.length) % list.length];
+const r5 = (n) => Math.max(0, Math.round(n / 5) * 5);
+const signedDiff = (a, b) => ((((a - b + 720) % 1440) + 1440) % 1440) - 720;
+const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+const countable = (i) => i.category !== "sleep";
+const planStats = (plan) => {
+    const list = plan.items.filter(countable);
+    const done = list.filter((i) => i.status === "done").length;
+    const skipped = list.filter((i) => i.status === "skipped").length;
+    return { total: list.length, done, skipped, pending: list.length - done - skipped, pct: list.length ? Math.round((done / list.length) * 100) : 0 };
+};
+/* --------------------- natural-language note parsing ------------------- */
+const KIND_WORDS = {
+    school: "school|class|classes|lecture|lectures|college|university",
+    work: "work|job|shift",
+    appointment: "appointment|doctor|dentist|meeting|interview",
+    errand: "errand|errands|groceries|grocery|shopping|bank|pharmacy",
+    event: "church|party|game|practice|event|birthday|training",
+};
+const T = "(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm|a\\.m\\.|p\\.m\\.)?";
+const meridiem = (s) => (s ? (/^p/i.test(s) ? "pm" : "am") : null);
+const to24 = (h, m, ap) => (ap ? (h % 12) + (ap === "pm" ? 12 : 0) : h) * 60 + (m || 0);
+function resolveRange(h1, m1, a1, h2, m2, a2, kind) {
+    let s;
+    if (a1)
+        s = to24(h1, m1, a1);
+    else if (a2) {
+        s = to24(h1, m1, a2);
+        const e2 = to24(h2, m2, a2);
+        if (s >= e2)
+            s = to24(h1, m1, a2 === "pm" ? "am" : "pm");
+    }
+    else if (h1 === 12)
+        s = 12 * 60 + (m1 || 0);
+    else if (h1 >= 7 && h1 <= 11)
+        s = h1 * 60 + (m1 || 0);
+    else if (h1 >= 1 && h1 <= 6)
+        s = (h1 + 12) * 60 + (m1 || 0);
+    else
+        s = h1 * 60 + (m1 || 0);
+    let e;
+    if (a2)
+        e = to24(h2, m2, a2);
+    else {
+        const am = to24(h2, m2, "am"), pm = to24(h2, m2, "pm");
+        e = am > s + 29 ? am : pm > s + 29 ? pm : am + DAY;
+        if (h2 > 12)
+            e = h2 * 60 + (m2 || 0);
+    }
+    if (e <= s)
+        e = s + 60;
+    return { s, e };
+}
+function parseNote(text) {
+    const out = { commitments: [], goals: [], energy: null };
+    if (!text || !text.trim())
+        return out;
+    const names = Object.entries(KIND_WORDS);
+    names.forEach(([type, words]) => {
+        const range = new RegExp(`\\b(${words})\\b[^.,;\\n]*?(?:from|at|between)?\\s*${T}\\s*(?:-|–|—|to|until|till)\\s*${T}`, "gi");
+        let m;
+        while ((m = range.exec(text))) {
+            const { s, e } = resolveRange(+m[2], +m[3] || 0, meridiem(m[4]), +m[5], +m[6] || 0, meridiem(m[7]), type);
+            out.commitments.push({ type, name: cap(m[1].toLowerCase()), start: toHHMM(s), end: toHHMM(e), assumed: false });
+        }
+        const single = new RegExp(`\\b(${words})\\b[^.,;\\n]*?\\b(?:at|@)\\s*${T}`, "gi");
+        while ((m = single.exec(text))) {
+            const { s } = resolveRange(+m[2], +m[3] || 0, meridiem(m[4]), +m[2] + 1, 0, null, type);
+            const dur = type === "errand" ? 45 : type === "event" ? 90 : 60;
+            const start = toHHMM(s);
+            if (!out.commitments.some((c) => c.type === type && c.start === start)) {
+                out.commitments.push({ type, name: cap(m[1].toLowerCase()), start, end: toHHMM(s + dur), assumed: true });
+            }
+        }
+    });
+    const g = new Set();
+    if (/backtest|forex|trad(e|ing)\b|chart/i.test(text))
+        g.add("forex");
+    if (/\bread(ing)?\b|book/i.test(text))
+        g.add("reading");
+    if (/exercise|workout|gym|\brun(ning)?\b|\bwalk\b|stretch/i.test(text))
+        g.add("exercise");
+    if (/homework|assignment|study|exam|revision/i.test(text))
+        g.add("school");
+    if (/business|client|side project/i.test(text))
+        g.add("business");
+    if (/friend|family|call mom|call dad|relationship/i.test(text))
+        g.add("social");
+    if (/\brest\b|nap|recover/i.test(text))
+        g.add("rest");
+    out.goals = [...g];
+    if (/\b(very tired|tired|exhausted|drained|sleepy|burnt out|burned out|low energy)\b/i.test(text))
+        out.energy = "low";
+    else if (/\b(high energy|energi[sz]ed|fresh|motivated|full of energy)\b/i.test(text))
+        out.energy = "high";
+    return out;
+}
+/* ------------------------------ task copy ----------------------------- */
+const FOREX_CONCEPTS = [
+    "where your setup is valid and where it is not",
+    "position sizing and fixed risk per trade",
+    "stop-loss placement rules",
+    "session timing and when NOT to trade",
+    "risk-to-reward and expectancy",
+];
+function forexFocus(date, prefs, variant, minutes) {
+    const dow = parseKey(date).getDay();
+    const setup = (prefs.forexSetup || "").trim() || "your main setup";
+    const trades = clamp(Math.round((minutes / 45) * 10 / 5) * 5, 5, 30);
+    const concept = pick(FOREX_CONCEPTS, dayIndex(date) + variant);
+    const backtest = {
+        mode: "Backtest",
+        task: `Backtest ${setup} for ${trades} historical trades and record every result in R.`,
+        detail: "For each trade log the setup, entry, stop loss, take profit, result in R, win or loss, reason for entry, whether you followed your rules, and a screenshot.",
+    };
+    const study = {
+        mode: "Study one concept",
+        task: `Study one concept only: ${concept}. Finish by writing the rule it adds to your plan in one sentence.`,
+        detail: "Use one source, take notes, then check the concept against 5 historical charts. No random video hopping.",
+    };
+    const journal = {
+        mode: "Review your trades",
+        task: "Review your last 10 trades or backtests and tag every mistake.",
+        detail: "Group mistakes as: broke a rule, bad entry, bad exit, or emotional. Find the one that cost the most R and write the fix.",
+    };
+    const psychology = {
+        mode: "Trading psychology",
+        task: "Write your pre-trade checklist, then replay 10 setups and mark each one \"take\" or \"skip\" before looking at the outcome.",
+        detail: "The goal is patience: a skipped bad setup counts as a win today.",
+    };
+    const review = {
+        mode: "Weekly review",
+        task: "Review this week's results in R: win rate, average R and rule breaks. Change a rule only if 30+ trades support it.",
+        detail: "No new strategies. One tested strategy executed well beats five untested ones.",
+    };
+    const order = [review, backtest, study, backtest, journal, psychology, backtest];
+    return variant % 3 === 1 ? pick([backtest, study, journal, psychology], dow + variant) : order[dow];
+}
+function readingFocus(date, variant, goals) {
+    const dow = parseKey(date).getDay();
+    const base = ["General knowledge", "Finance", "Trading psychology", goals.has("school") ? "School-related material" : "Business", "Business", "Personal development", "Communication"];
+    const type = variant % 3 === 1 ? pick(["Finance", "Trading psychology", "Business", "Personal development", "Communication", "General knowledge"], dow + variant) : base[dow];
+    return { type, detail: `${type}. Read with your phone in another room and write down one idea you will use.` };
+}
+function fitnessFocus(date, minutes, energy, variant) {
+    const dow = parseKey(date).getDay();
+    if (energy === "low") {
+        return { title: "Easy movement", detail: `Walk for ${Math.max(10, minutes - 8)} minutes at an easy pace, then stretch for 5 to 8 minutes. Keep it gentle: recovery counts today.` };
+    }
+    if (minutes <= 20) {
+        return { title: "Short circuit", detail: `${minutes} minutes: 3 rounds of 10 push-ups, 15 squats and a 20-second plank. Stretch for 2 minutes.` };
+    }
+    const rounds = clamp(Math.round((minutes - 10) / 8), 2, 5);
+    const list = [
+        { title: "Bodyweight circuit", detail: `${rounds} rounds: 15 push-ups, 20 squats, 12 lunges per leg, 30-second plank. Rest 60 seconds between rounds, then stretch for 5 minutes.` },
+        { title: "Easy run or brisk walk", detail: `${Math.max(15, minutes - 10)} minutes at a pace where you can still talk, plus a 5-minute warm-up and cool-down.` },
+        { title: "Upper body (gym or bodyweight)", detail: "3 sets of 8 to 12: push-ups or bench press, rows, overhead press, curls or dips. Rest 60 to 90 seconds." },
+        { title: "Lower body (gym or bodyweight)", detail: "3 sets of 8 to 12: squats, Romanian deadlifts or hip hinges, lunges, calf raises. Finish with hip stretches." },
+        { title: "Long walk and mobility", detail: `Walk for ${Math.max(20, minutes - 10)} minutes, then 10 minutes of stretching for hips, hamstrings and shoulders.` },
+    ];
+    return pick(list, dow + variant);
+}
+const GROWTH_TASKS = [
+    "Review your last 10 expenses and label each one need or want.",
+    "Explain one idea you learned this week out loud for 5 minutes, then write 3 takeaways.",
+    "Write down the one habit you will stop this week and what replaces it.",
+    "Learn one personal-finance concept (for example compound interest or an emergency fund) and rewrite it in your own words.",
+    "Tidy one area of your space and write next week's top 3 goals.",
+];
+const PHONE_RULES = [
+    "Your phone stays in another room during every focus block.",
+    "No TikTok or social apps until your first forex session is done.",
+    "Social apps only inside your scheduled leisure block. Close them when it ends.",
+    "Charge your phone outside the bedroom tonight and use a real alarm clock.",
+    "Mute social notifications today and check messages only at meals.",
+    "Before you unlock your phone, say out loud what you are picking it up for.",
+];
+const RULES = {
+    minimum: "Small wins still count. Protect the minimum and your sleep.",
+    light: "Do the important thing first. Everything else can be smaller today.",
+    low: "Rest is part of the work. Sleep on time tonight.",
+    high: "Spend your best hours on your hardest task.",
+    open: "Depth beats volume. One focused hour is worth three scattered ones.",
+    full: "Do the important things first, then enjoy your free time without guilt.",
+};
+/* ----------------------------- scheduling ----------------------------- */
+function findSlotIn(blocks, dur, ideal, lo, hi, bb = 5, ba = 10) {
+    let best = null, bestD = Infinity;
+    for (let s = Math.ceil(lo / 5) * 5; s + dur <= hi; s += 5) {
+        if (blocks.some((b) => s - bb < b.end && s + dur + ba > b.start))
+            continue;
+        const d = Math.abs(s - ideal);
+        if (d < bestD) {
+            best = s;
+            bestD = d;
+        }
+    }
+    return best;
+}
+function allocate(capacity, reqs) {
+    let rem = capacity;
+    const out = {};
+    reqs.forEach((r) => {
+        if (rem >= r.min) {
+            out[r.key] = r.min;
+            rem -= r.min;
+        }
+        else
+            out[r.key] = 0;
+    });
+    reqs.forEach((r) => {
+        if (!out[r.key])
+            return;
+        const add = Math.floor(Math.max(0, Math.min(r.target - out[r.key], rem)) / 5) * 5;
+        out[r.key] += add;
+        rem -= add;
+    });
+    return out;
+}
+/**
+ * Local rules engine. Same input/output contract a real AI planner would use.
+ * @returns {DayPlan}
+ */
+function buildPlan(input) {
+    const { date, prefs } = input;
+    const behavior = input.behavior || {};
+    const variant = input.variant || 0;
+    const energy = input.energy || "normal";
+    const goals = new Set(input.goals || []);
+    const hasSel = goals.size > 0;
+    const f = (m) => fmtTime(m, prefs.timeFormat);
+    const notes = [];
+    const warnings = [];
+    let W = toMin(input.wake);
+    let B = toMin(input.bed);
+    if (B <= W)
+        B += DAY;
+    const sleepTarget = W + DAY - B;
+    const fixed = (input.commitments || [])
+        .filter((c) => c && c.start)
+        .map((c) => {
+        const s = toMin(c.start);
+        let e = c.end ? toMin(c.end) : s + 60;
+        const type = c.type || "event";
+        if (e <= s) {
+            e = s + 60;
+            warnings.push(`"${c.name || CATS[type].label}" ends before it starts, so I assumed it lasts 1 hour.`);
+        }
+        const given = c.travelMin !== "" && c.travelMin != null && !isNaN(Number(c.travelMin));
+        const travel = given ? { min: clamp(Number(c.travelMin), 0, 180), est: false } : { min: TRAVEL_DEFAULT[type] ?? 15, est: true };
+        return { ...c, type, s, e, travel, label: (c.name || "").trim() || CATS[type].label };
+    })
+        .sort((a, b) => a.s - b.s);
+    const WAKE = 20, BREAKFAST = 20, PREP = 20, EXTRA = 5;
+    if (fixed.length) {
+        const first = fixed[0];
+        const needW = first.s - (first.travel.min + WAKE + BREAKFAST + PREP + EXTRA);
+        if (needW < W) {
+            const newW = Math.max(0, Math.floor(needW / 5) * 5);
+            notes.push(`To reach ${first.label} on time you need to be up by ${f(newW)}, so I moved your wake-up from ${f(W)}.`);
+            W = newW;
+            const keep = Math.min(sleepTarget, 480);
+            B = W + DAY - keep;
+            notes.push(`Bedtime moved to ${f(B)} so you still get ${fmtDur(keep)} of sleep.`);
+        }
+    }
+    const sleepMin = W + DAY - B;
+    if (sleepMin < 360)
+        warnings.push(`This plan leaves only ${fmtDur(sleepMin)} of sleep. That is too little: move bedtime earlier or wake-up later.`);
+    else if (sleepMin < 420)
+        warnings.push(`Sleep is ${fmtDur(sleepMin)}. Aim for about 8 hours when you can.`);
+    const blocks = [];
+    const add = (b) => { const it = { id: uid(), status: "pending", fixed: false, estimate: false, note: "", ...b }; blocks.push(it); return it; };
+    add({ start: B, end: W + DAY, title: "Sleep", category: "sleep", fixed: true, note: `${fmtDur(sleepMin)} of sleep. Phone charges away from your bed.` });
+    // 1) fixed commitments + travel
+    fixed.forEach((c, i) => {
+        const cover = c.s <= 720 && c.e >= 810 && c.e - c.s >= 240;
+        const note = [c.location ? `At ${c.location}.` : "", c.notes || "", cover && (c.type === "school" || c.type === "work") ? "Bring lunch and water: midday is covered." : ""].filter(Boolean).join(" ");
+        if (c.type !== "travel" && c.travel.min > 0) {
+            const prevEnd = blocks.filter((b) => b.category !== "sleep" && b.end <= c.s).reduce((m, b) => Math.max(m, b.end), W);
+            const t = Math.min(c.travel.min, c.s - prevEnd);
+            if (t >= 5)
+                add({ start: c.s - t, end: c.s, title: `Travel to ${c.label}`, category: "travel", fixed: true, estimate: c.travel.est, note: c.travel.est ? `Estimated ${c.travel.min} min. Adjust if your trip is different.` : `${c.travel.min} min trip. Arrive a few minutes early.` });
+            if (t < c.travel.min)
+                warnings.push(`Not enough time to travel to ${c.label} after your previous commitment. Move one of them or shorten the trip.`);
+        }
+        add({ start: c.s, end: c.e, title: c.label, category: c.type, fixed: true, note });
+        if (c.type !== "travel" && c.travel.min > 0) {
+            const next = fixed[i + 1];
+            const gap = next ? next.s - c.e : Infinity;
+            const needNext = next && next.type !== "travel" ? next.travel.min : 0;
+            if (gap >= c.travel.min + needNext + 15) {
+                add({ start: c.e, end: c.e + c.travel.min, title: "Travel home", category: "travel", fixed: true, estimate: c.travel.est, note: c.travel.est ? "Estimated. Use it to decompress, not to scroll." : "Use it to decompress, not to scroll." });
+            }
+        }
+    });
+    for (let i = 0; i < fixed.length; i++)
+        for (let j = i + 1; j < fixed.length; j++) {
+            if (fixed[j].s < fixed[i].e)
+                warnings.push(`${fixed[i].label} and ${fixed[j].label} overlap. Fix one of them so the plan is realistic.`);
+        }
+    // 2) night routine (protects sleep)
+    const windDownBase = 35 + (behavior.lateSleeper ? 20 : 0);
+    let reviewStart = B - windDownBase - 15;
+    const lastBusy = blocks.filter((b) => b.category !== "sleep").reduce((m, b) => Math.max(m, b.end), 0);
+    let skipNight = false;
+    if (reviewStart < lastBusy + 5) {
+        if (lastBusy + 5 > B - 25) {
+            skipNight = true;
+            reviewStart = B;
+            warnings.push("Your last commitment ends right at bedtime, so there is no wind-down. I did not cut your sleep. Consider moving that commitment earlier.");
+        }
+        else {
+            reviewStart = lastBusy + 5;
+            warnings.push("Your evening commitments are late, so the wind-down is shorter than usual.");
+        }
+    }
+    if (!skipNight) {
+        const revLen = Math.min(15, Math.max(10, B - reviewStart - 15));
+        add({ start: reviewStart, end: reviewStart + revLen, title: "Night review", category: "growth", fixed: true, note: "Answer the 5 review questions in your Journal." });
+        add({ start: reviewStart + revLen, end: B, title: "Wind down", category: "rest", fixed: true, note: "Screens off, lights low, prepare tomorrow's clothes and bag." });
+    }
+    // 3) wake, get ready, breakfast
+    add({ start: W, end: W + WAKE, title: "Wake up", category: "routine", fixed: true, note: "Water, hygiene, open the curtains. No phone yet." });
+    if (fixed.length) {
+        const lead = blocks.filter((b) => b.category === "travel" && b.end <= fixed[0].s + 1 && b.end > W).sort((a, b) => a.start - b.start)[0];
+        const leave = lead && lead.end === fixed[0].s ? lead.start : fixed[0].s;
+        const ps = Math.max(W + WAKE, leave - PREP);
+        if (leave - ps >= 10)
+            add({ start: ps, end: leave, title: "Get ready", category: "routine", fixed: true, note: "Bag, keys, charger, water. Check you have everything." });
+    }
+    const bf = findSlotIn(blocks, BREAKFAST, W + WAKE, W + WAKE, W + 240, 0, 0);
+    if (bf !== null)
+        add({ start: bf, end: bf + BREAKFAST, title: "Breakfast", category: "meals", fixed: false, note: "Eat something with protein before you open any app." });
+    // 4) meals
+    const lunch = findSlotIn(blocks, 35, 765, 690, 960, 0, 0);
+    if (lunch !== null)
+        add({ start: lunch, end: lunch + 35, title: "Lunch", category: "meals", note: "Sit down to eat. A real break is part of the plan." });
+    const dinnerHi = Math.max(1080, Math.min(1320, reviewStart - 60));
+    let dinner = findSlotIn(blocks, 45, 1140, 1050, dinnerHi, 0, 0);
+    if (dinner === null)
+        dinner = findSlotIn(blocks, 35, 1140, 990, Math.max(1080, reviewStart - 30), 0, 0);
+    const dinnerEnd = dinner !== null ? dinner + 45 : 1110;
+    if (dinner !== null)
+        add({ start: dinner, end: dinner + 45, title: "Dinner", category: "meals", note: "Eat without your phone." });
+    if (lunch === null && fixed.length && !fixed.some((c) => c.s <= 720 && c.e >= 810))
+        warnings.push("I could not find a gap for lunch. Pack something you can eat on the move.");
+    // 5) capacity and day mode
+    const dayLo = W + 30;
+    const dayHi = skipNight ? B - 30 : reviewStart - 5;
+    const occupied = blocks.filter((b) => b.category !== "sleep" && b.start < reviewStart).reduce((m, b) => m + Math.max(0, Math.min(b.end, reviewStart) - Math.max(b.start, W)), 0);
+    const freeMin = Math.max(0, reviewStart - W - occupied);
+    let mode = "full";
+    if (freeMin < 200 || (energy === "low" && freeMin < 320))
+        mode = "minimum";
+    else if (freeMin < 360 || energy === "low")
+        mode = "light";
+    const open = mode === "full" && freeMin >= 600 && energy !== "low";
+    const capacity = Math.floor(freeMin * 0.75);
+    const sel = (k) => !hasSel || goals.has(k);
+    const scale = energy === "low" ? 0.5 : mode === "full" ? 1 : 0.65;
+    const bonus = open ? 30 : 0;
+    const limit = prefs.entertainmentLimit;
+    const reqs = [];
+    if (goals.has("school"))
+        reqs.push({ key: "school", min: 25, target: mode === "full" ? 60 : mode === "light" ? 45 : 25 });
+    const fxT = mode === "minimum" ? 30 : sel("forex") ? r5(prefs.forexMin * scale + bonus) : 30;
+    reqs.push({ key: "forex", min: 25, target: Math.max(25, fxT) });
+    const rdT = mode === "minimum" ? 25 : sel("reading") ? r5(prefs.readingMin * scale + bonus) : 25;
+    reqs.push({ key: "reading", min: 25, target: Math.max(25, rdT) });
+    const exT = mode === "minimum" ? 15 : energy === "low" ? Math.min(prefs.exerciseMin, 25) : sel("exercise") ? r5(prefs.exerciseMin * (mode === "light" ? 0.7 : 1)) : 20;
+    reqs.push({ key: "exercise", min: 15, target: Math.max(15, exT) });
+    if (mode !== "minimum" && (goals.has("growth") || (!hasSel && energy !== "low")))
+        reqs.push({ key: "growth", min: 15, target: 30 });
+    if (goals.has("business"))
+        reqs.push({ key: "business", min: 25, target: mode === "full" ? 45 : 25 });
+    if (goals.has("social"))
+        reqs.push({ key: "social", min: 15, target: 30 });
+    if (goals.has("rest"))
+        reqs.push({ key: "rest", min: 20, target: 30 });
+    const leisureT = mode === "minimum" ? Math.min(30, limit) : mode === "light" ? Math.min(90, limit) : limit;
+    if (limit > 0)
+        reqs.push({ key: "leisure", min: Math.min(20, limit), target: Math.max(leisureT, Math.min(20, limit)) });
+    const alloc = allocate(capacity, reqs);
+    // 6) windows
+    const WIN = {
+        early: [dayLo, 570, dayLo + 15],
+        morning: [480, 720, 540],
+        afternoon: [810, 1050, 870],
+        lateAfternoon: [990, 1140, 1050],
+        evening: [Math.max(1110, dinnerEnd + 10), dayHi, Math.max(1200, dinnerEnd + 30)],
+        eveningLight: [Math.max(1110, dinnerEnd + 45), dayHi, Math.max(1200, dinnerEnd + 60)],
+        any: [dayLo, dayHi, Math.round((dayLo + dayHi) / 2)],
+    };
+    const wins = (names) => [...names.map((n) => WIN[n]), WIN.any];
+    const place = (dur, minDur, windows, windowFirst = false) => {
+        const tries = [];
+        for (let d = dur; d > minDur; d -= 10)
+            tries.push(d);
+        tries.push(minDur);
+        const attempt = (d, w) => {
+            const lo = Math.max(w[0], dayLo), hi = Math.min(w[1], dayHi);
+            if (hi - lo < d)
+                return null;
+            const s = findSlotIn(blocks, d, w[2] ?? lo, lo, hi);
+            return s === null ? null : { start: s, dur: d };
+        };
+        if (windowFirst) {
+            for (const w of windows)
+                for (const d of tries) {
+                    const r = attempt(d, w);
+                    if (r)
+                        return r;
+                }
+            return null;
+        }
+        for (const d of tries)
+            for (const w of windows) {
+                const r = attempt(d, w);
+                if (r)
+                    return r;
+            }
+        return null;
+    };
+    const placed = {};
+    const put = (key, dur, minDur, windows, item, windowFirst = false) => {
+        const r = place(dur, minDur, windows, windowFirst);
+        if (!r)
+            return null;
+        if (r.dur < dur)
+            notes.push(`Trimmed ${item.title} from ${fmtDur(dur)} to ${fmtDur(r.dur)} to keep your day realistic.`);
+        placed[key] = (placed[key] || 0) + r.dur;
+        return add({ start: r.start, end: r.start + r.dur, ...item });
+    };
+    const firstStart = fixed.length ? fixed[0].s : Infinity;
+    const forexPlan = forexFocus(date, prefs, variant, alloc.forex || 30);
+    const readPlan = readingFocus(date, variant, goals);
+    let fxOrder = variant % 2 === 0 ? ["morning", "early", "afternoon", "evening"] : ["afternoon", "morning", "early", "evening"];
+    if (behavior.forexBest) {
+        const b = behavior.forexBest;
+        fxOrder = b === "morning" ? ["morning", "early", "afternoon", "evening"] : b === "afternoon" ? ["afternoon", "morning", "evening"] : ["evening", "afternoon", "morning"];
+        notes.push(`Forex is scheduled in the ${b} because that is when you actually finish it.`);
+    }
+    if (alloc.school)
+        put("school", alloc.school, 25, wins(["afternoon", "evening", "morning"]), { title: "School study", category: "school", note: "One subject, one task. Start with whatever is due first." });
+    if (alloc.forex) {
+        const A = alloc.forex;
+        if (A > 90) {
+            const a = Math.ceil((A * 0.6) / 5) * 5, b = A - a;
+            put("forex", a, 45, wins(fxOrder), { title: `Forex: ${forexPlan.mode}`, category: "forex", note: forexPlan.task });
+            if (b >= 20)
+                put("forex", b, 20, wins(behavior.forexBest ? fxOrder : ["afternoon", "morning", "early", "evening"]), { title: "Forex: journal the session", category: "forex", note: "Log what you followed, what you broke, and one fix for next time." });
+        }
+        else
+            put("forex", A, 25, wins(fxOrder), { title: `Forex: ${forexPlan.mode}`, category: "forex", note: forexPlan.task });
+    }
+    if (alloc.reading) {
+        const R = alloc.reading, maxS = behavior.readingMax || 120;
+        const n = Math.ceil(R / maxS);
+        const each = n === 1 ? R : r5(R / n);
+        for (let k = 0; k < n; k++) {
+            const order = k === 0 ? (variant % 2 === 0 ? ["afternoon", "evening", "morning"] : ["evening", "afternoon", "morning"]) : ["lateAfternoon", "afternoon", "morning", "evening"];
+            put("reading", each, 20, wins(order), { title: `Reading: ${readPlan.type}`, category: "reading", note: readPlan.detail });
+        }
+    }
+    const fitPlan = fitnessFocus(date, alloc.exercise || 20, energy, variant);
+    if (alloc.exercise) {
+        const exOrder = firstStart > 600 ? ["early", "morning", "lateAfternoon", "eveningLight"] : ["lateAfternoon", "afternoon", "eveningLight", "morning"];
+        put("exercise", alloc.exercise, 15, wins(exOrder), { title: `Workout: ${fitPlan.title}`, category: "fitness", note: fitPlan.detail });
+    }
+    const growthTask = pick(GROWTH_TASKS, dayIndex(date) + variant);
+    if (alloc.growth)
+        put("growth", alloc.growth, 15, wins(["evening", "afternoon", "morning"]), { title: "Personal growth", category: "growth", note: growthTask });
+    if (alloc.business)
+        put("business", alloc.business, 25, wins(["afternoon", "morning", "evening"]), { title: "Business: one revenue task", category: "business", note: "Pick one task that moves a result forward. Finish it before you start another." });
+    if (alloc.social)
+        put("social", alloc.social, 15, wins(["evening", "lateAfternoon"]), { title: "Time with people", category: "social", note: "Call or meet someone you care about. Phone away while you talk." });
+    if (alloc.rest)
+        put("rest", alloc.rest, 20, wins(["afternoon", "lateAfternoon"]), { title: "Quiet rest", category: "rest", note: "No screens. Walk, stretch, or sit in silence." });
+    if (alloc.leisure)
+        put("leisure", alloc.leisure, Math.min(20, alloc.leisure), [WIN.evening, WIN.lateAfternoon], { title: "Leisure", category: "leisure", note: `Movies, TikTok, games. Capped at ${fmtDur(limit)} per day by your setting. Enjoy it without guilt.` }, true);
+    const core = [["forex", "forex"], ["reading", "reading"], ["exercise", "exercise"]];
+    core.forEach(([k, label]) => {
+        if (!placed[k])
+            warnings.push(`I could not fit ${label} into today without overloading it. Do a 15-minute version if you can.`);
+    });
+    if (limit > 0 && !placed.leisure)
+        notes.push("There was no room for leisure today without cutting sleep or buffers. Take 15 minutes of guilt-free downtime in an open gap.");
+    if (mode === "minimum")
+        notes.push(`Minimum Day: only about ${fmtDur(freeMin)} is free after commitments, travel and meals. Forex, reading and movement are kept at their smallest useful size so the streak survives.`);
+    else if (mode === "light")
+        notes.push(energy === "low" ? "Low energy: demanding work is lighter and the workout is easy. Sleep stays protected." : `Busy day: only about ${fmtDur(freeMin)} is free, so targets are reduced to about 65%.`);
+    else if (open)
+        notes.push("Open day: the extra time goes into deeper forex work and reading, not more entertainment.");
+    if (behavior.readingMax && behavior.readingMax < 120)
+        notes.push(`Reading sessions are capped at ${fmtDur(behavior.readingMax)} because you finish shorter ones more often.`);
+    if (behavior.lateSleeper)
+        notes.push("Wind-down starts 20 minutes earlier because you have been going to bed late.");
+    if (input.detected && input.detected.length)
+        notes.unshift(`From your note I picked up: ${input.detected.join(", ")}.`);
+    notes.push("Travel times marked as estimates are my guesses. Edit them if you know better.");
+    const items = blocks.slice().sort((a, b) => a.start - b.start);
+    const topFixed = fixed.slice().sort((a, b) => ["school", "appointment", "work", "event", "errand", "travel"].indexOf(a.type) - ["school", "appointment", "work", "event", "errand", "travel"].indexOf(b.type))[0];
+    const leaveBlock = topFixed && items.find((i) => i.category === "travel" && i.end === topFixed.s);
+    const priorities = [];
+    if (topFixed)
+        priorities.push(`Be on time for ${topFixed.label} at ${f(topFixed.s)}${leaveBlock ? ` (leave at ${f(leaveBlock.start)})` : ""}.`);
+    else if (alloc.school)
+        priorities.push("Finish your school study block first.");
+    priorities.push(placed.forex ? `Forex: ${forexPlan.task}` : "Do a 25-minute minimum forex session.");
+    if (mode === "minimum" || energy === "low")
+        priorities.push(`Lights out by ${f(B)}.`);
+    else if (placed.reading)
+        priorities.push(`Read ${readPlan.type.toLowerCase()} for ${fmtDur(placed.reading)}.`);
+    else if (placed.exercise)
+        priorities.push(`${fitPlan.title} for ${fmtDur(placed.exercise)}.`);
+    else
+        priorities.push(`Lights out by ${f(B)}.`);
+    const extras = [];
+    if (placed.reading)
+        extras.push(`Read ${readPlan.type.toLowerCase()} for ${fmtDur(placed.reading)}.`);
+    if (placed.exercise)
+        extras.push(`${fitPlan.title} for ${fmtDur(placed.exercise)}.`);
+    extras.push(`Lights out by ${f(B)}.`);
+    extras.forEach((x) => { if (priorities.length < 3 && !priorities.includes(x))
+        priorities.push(x); });
+    const objective = mode === "minimum"
+        ? "Get through a packed day with three small wins and a full night of sleep."
+        : mode === "light"
+            ? "Protect your energy: do the essentials, keep movement light, and sleep on time."
+            : open
+                ? "Use the open day for deep forex work and reading without cutting sleep."
+                : topFixed
+                    ? `Handle ${topFixed.label} first, then spend your focused hours on forex and reading.`
+                    : "Put your best hours into forex, then read, move and rest.";
+    const ruleKey = mode === "minimum" ? "minimum" : energy === "low" ? "low" : mode === "light" ? "light" : open ? "open" : energy === "high" ? "high" : "full";
+    const noRoom = (txt) => `No full block fits today. ${txt}`;
+    return {
+        id: uid(), date, createdAt: Date.now(), objective, mode, energy, wake: W, bed: B, sleepMin, freeMin,
+        items, priorities: priorities.slice(0, 3),
+        forexTask: { title: forexPlan.mode, task: placed.forex ? forexPlan.task : noRoom("Do 25 minutes: " + forexPlan.task), detail: forexPlan.detail, minutes: placed.forex || 0 },
+        readingTask: { title: readPlan.type, detail: placed.reading ? readPlan.detail : noRoom("Read 15 pages of " + readPlan.type.toLowerCase() + " before bed."), minutes: placed.reading || 0 },
+        fitnessTask: { title: fitPlan.title, detail: placed.exercise ? fitPlan.detail : noRoom("Do 10 minutes of stretching before bed."), minutes: placed.exercise || 0 },
+        phoneRule: pick(PHONE_RULES, dayIndex(date) + variant),
+        nightReview: NIGHT_REVIEW, rule: RULES[ruleKey], notes, warnings, accepted: false, sample: false, variant,
+    };
+}
+/* ------------------------- behavior (personalization) ------------------ */
+const periodOf = (min) => { const m = min % DAY; return m < 720 ? "morning" : m < 1080 ? "afternoon" : "evening"; };
+function analyzeBehavior(plans, journal, todayKey) {
+    const past = Object.values(plans).filter((p) => p.accepted && p.date < todayKey && p.date >= addDays(todayKey, -28));
+    const insights = [];
+    const out = { forexBest: null, readingMax: 120, lateSleeper: false, insights, pastDays: past.length };
+    const fx = { morning: { n: 0, d: 0 }, afternoon: { n: 0, d: 0 }, evening: { n: 0, d: 0 } };
+    const rd = { n: 0, d: 0 };
+    past.forEach((p) => p.items.forEach((i) => {
+        if (i.category === "forex") {
+            const b = fx[periodOf(i.start)];
+            b.n++;
+            if (i.status === "done")
+                b.d++;
+        }
+        if (i.category === "reading" && i.end - i.start >= 90) {
+            rd.n++;
+            if (i.status === "done")
+                rd.d++;
+        }
+    }));
+    const el = Object.entries(fx).filter(([, v]) => v.n >= 3).map(([k, v]) => ({ k, ...v, rate: v.d / v.n })).sort((a, b) => b.rate - a.rate);
+    if (el.length >= 2 && el[0].rate - el[1].rate >= 0.25) {
+        out.forexBest = el[0].k;
+        insights.push({ id: "forex-time", title: `Forex works best for you in the ${el[0].k}`, detail: `You finished ${el[0].d} of ${el[0].n} ${el[0].k} sessions versus ${el[1].d} of ${el[1].n} in the ${el[1].k}. New plans put forex in the ${el[0].k} first.` });
+    }
+    if (rd.n >= 3 && rd.d / rd.n < 0.5) {
+        out.readingMax = 75;
+        insights.push({ id: "reading-length", title: "Long reading blocks are not sticking", detail: `You finished ${rd.d} of ${rd.n} reading sessions of 90+ minutes. New plans use sessions of up to 75 minutes. Two shorter blocks beat one you skip.` });
+    }
+    const diffs = Object.values(journal)
+        .filter((j) => j.actualBed && plans[addDays(j.date, -1)] && plans[addDays(j.date, -1)].accepted)
+        .sort((a, b) => (a.date < b.date ? -1 : 1))
+        .map((j) => signedDiff(toMin(j.actualBed), plans[addDays(j.date, -1)].bed % DAY))
+        .slice(-7);
+    if (diffs.length >= 3) {
+        const late = diffs.filter((x) => x >= 45);
+        if (late.length >= 3 && late.length / diffs.length >= 0.5) {
+            out.lateSleeper = true;
+            const avg = Math.round(late.reduce((a, b) => a + b, 0) / late.length / 5) * 5;
+            insights.push({ id: "late-sleep", title: "You are going to bed later than planned", detail: `On ${late.length} of your last ${diffs.length} logged nights you went to bed about ${avg} minutes late. New plans start wind-down 20 minutes earlier. The fix is an earlier phone-off time, not a later bedtime.` });
+        }
+    }
+    out.sleepSamples = diffs.length;
+    out.forexSamples = Object.values(fx).reduce((a, b) => a + b.n, 0);
+    return out;
+}
+/* ----------------------------- sample data ----------------------------- */
+function makeSampleData(todayKey, user, prefs) {
+    const plans = {}, journal = {};
+    let seed = 7;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+    const texts = [
+        ["Finished the backtest and the reading block.", "Skipped the second reading session.", "Started late because I scrolled in the morning.", "Waiting for confirmation saves me from bad entries."],
+        ["Workout done, school done, 10 trades logged.", "Journal review.", "Too much phone before bed.", "Short sessions are easier to start."],
+        ["Strong forex session in the evening.", "Reading.", "Lost focus after lunch.", "My evening focus is better than my morning focus."],
+    ];
+    for (let i = 14; i >= 1; i--) {
+        const date = addDays(todayKey, -i);
+        const dow = parseKey(date).getDay();
+        const school = dow >= 1 && dow <= 5;
+        const plan = buildPlan({
+            date, wake: user.wake, bed: user.bed, energy: "normal", goals: ["forex", "reading", "exercise", "growth"], prefs, variant: i,
+            behavior: { forexBest: i % 2 === 0 ? "evening" : "morning" },
+            commitments: school ? [{ id: uid(), type: "school", name: "School", start: "08:00", end: "14:00", location: "", notes: "", travelMin: "" }] : [],
+        });
+        plan.items.forEach((it) => {
+            if (it.category === "sleep")
+                return;
+            let p = 0.92;
+            if (it.category === "forex")
+                p = periodOf(it.start) === "evening" ? 0.9 : periodOf(it.start) === "morning" ? 0.35 : 0.6;
+            if (it.category === "reading")
+                p = it.end - it.start >= 90 ? 0.25 : 0.8;
+            if (it.category === "fitness")
+                p = 0.7;
+            if (it.category === "growth")
+                p = 0.6;
+            const r = rnd();
+            it.status = r < p ? "done" : r < p + (1 - p) * 0.4 ? "skipped" : "pending";
+        });
+        plan.accepted = true;
+        plan.sample = true;
+        plans[date] = plan;
+        if (rnd() < 0.85) {
+            const prev = plans[addDays(date, -1)];
+            const t = texts[i % texts.length];
+            const base = prev ? prev.bed % DAY : toMin(user.bed);
+            journal[date] = {
+                date, accomplished: t[0], unfinished: t[1], wentWrong: t[2], learned: t[3], energy: "Normal", rules: "Yes", improve: "Start the first focus block on time.",
+                actualBed: toHHMM(base + (rnd() < 0.65 ? 50 + Math.round(rnd() * 40) : Math.round(rnd() * 10))), summary: null, sample: true,
+            };
+        }
+    }
+    const goals = [
+        { id: uid(), sample: true, title: "Become consistently profitable in forex", why: "Financial independence, built on tested rules.", targetDate: addDays(todayKey, 120), weeklyTarget: 20, unit: "backtested trades", total: 100, dailyTarget: "30–60 min", habits: ["Backtest with the journal template", "Review mistakes in R"], log: [] },
+        { id: uid(), sample: true, title: "Read every day", why: "A calmer, sharper mind.", targetDate: addDays(todayKey, 90), weeklyTarget: 10, unit: "hours", total: 60, dailyTarget: "60–120 min", habits: ["Phone in another room"], log: [] },
+    ];
+    [13, 12, 10, 9, 7, 6, 4, 3].forEach((d, k) => goals[0].log.push({ date: addDays(todayKey, -d), amount: [5, 5, 6, 4, 6, 5, 6, 5][k] }));
+    [13, 11, 9, 8, 6, 5, 3, 2].forEach((d, k) => goals[1].log.push({ date: addDays(todayKey, -d), amount: [1, 1.5, 1, 2, 1, 1.5, 1, 1][k] }));
+    return { plans, journal, goals };
+}
+/* ------------------------------ journal AI ----------------------------- */
+const firstSentence = (s) => {
+    const c = (s || "").trim().replace(/\s+/g, " ");
+    if (!c)
+        return "";
+    const m = c.match(/^[^.!?]{3,140}[.!?]?/);
+    return (m ? m[0] : c.slice(0, 140)).replace(/[.!?]+$/, "");
+};
+function summarizeJournalLocal(e, plan) {
+    const stats = plan ? planStats(plan) : null;
+    let lesson;
+    if (e.learned.trim())
+        lesson = `You learned: ${firstSentence(e.learned)}.`;
+    else if (e.wentWrong.trim())
+        lesson = `The friction today was: ${firstSentence(e.wentWrong)}.`;
+    else if (e.accomplished.trim())
+        lesson = `What worked: ${firstSentence(e.accomplished)}.`;
+    else
+        lesson = "There is not enough written yet to find a lesson. Add one thing that went well and one that did not.";
+    if (stats && stats.total)
+        lesson += ` You finished ${stats.done} of ${stats.total} planned items (${stats.pct}%).`;
+    const parts = [];
+    if (e.rules === "No" || e.rules === "Partly")
+        parts.push("Read your trading rules aloud before any chart work and skip any trade that fails the checklist.");
+    if (e.unfinished.trim())
+        parts.push(`Put what slipped first: ${firstSentence(e.unfinished)}.`);
+    if (e.energy === "Low")
+        parts.push("Protect energy: start wind-down on time and keep tomorrow's plan lighter.");
+    if (e.improve.trim())
+        parts.push(`${firstSentence(e.improve)}.`);
+    const improvement = parts.length ? parts.slice(0, 3).join(" ") : "Keep the plan and repeat what worked. Change one small thing, not everything.";
+    return { lesson, improvement, generatedAt: Date.now(), engine: "local" };
+}
+/* ------------------------------ AI service ------------------------------ *
+ * This is the only place a real AI API needs to be connected.
+ * Replace the bodies of planDay / summarizeJournal with fetch() calls to your
+ * backend and keep the same input / output shapes (see types.ts).
+ * Nothing here calls an AI model today.
+ * ------------------------------------------------------------------------ */
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+const aiService = {
+    provider: { id: "local-rules", label: "Local rules engine", connected: false },
+    async planDay(input) { await sleepMs(250); return buildPlan(input); },
+    async summarizeJournal(entry, plan) { await sleepMs(500); return summarizeJournalLocal(entry, plan); },
+};
+/* =============================== STYLES =============================== */
+const CSS = `
+.df-root{--bg:#0E1116;--surface:#151A21;--surface2:#1C232C;--line:#27303B;--line2:#3A4554;--text:#E9ECF1;--muted:#98A2B1;--accent:#E3B341;--btn-bg:#E3B341;--btn-ink:#18130A;--danger:#F27C84;--ok:#4FC3A1;--serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color-scheme:dark}
+.df-root[data-theme="light"]{--bg:#F3F5F8;--surface:#FFFFFF;--surface2:#EFF2F6;--line:#E0E4EB;--line2:#C6CDD8;--text:#141920;--muted:#566070;--accent:#8A5F00;--btn-bg:#141920;--btn-ink:#FFFFFF;--danger:#B3382C;--ok:#12755A;color-scheme:light}
+.df-root{min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:16px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.df-root *{box-sizing:border-box}
+.df-root h1,.df-root h2,.df-root h3,.df-root p{margin:0}
+.df-root button,.df-root input,.df-root select,.df-root textarea{font:inherit;color:inherit}
+.df-root button{cursor:pointer}
+.df-root :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.df-root button:disabled{opacity:.45;cursor:not-allowed}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* shell */
+.df-side{display:none}
+.df-main{padding:22px 16px calc(100px + env(safe-area-inset-bottom))}
+.df-page{max-width:760px;margin:0 auto}
+.df-bottom{position:fixed;left:0;right:0;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(6,1fr);background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(12px);border-top:1px solid var(--line);padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
+.nav-item{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;border-radius:12px;padding:8px 2px;font-size:11.5px;color:var(--muted);min-height:52px;transition:color .15s,background .15s}
+.nav-item[aria-current="page"]{color:var(--text)}
+.nav-item[aria-current="page"] svg{color:var(--accent)}
+@media(min-width:960px){
+  .df-side{display:flex;flex-direction:column;position:fixed;left:0;top:0;bottom:0;width:256px;padding:28px 16px;border-right:1px solid var(--line);background:var(--bg)}
+  .df-main{margin-left:256px;padding:48px 56px 72px}
+  .df-bottom{display:none}
+  .df-side .nav-item{flex-direction:row;gap:12px;font-size:15px;padding:11px 14px;justify-content:flex-start;min-height:0}
+  .df-side .nav-item:hover{background:var(--surface)}
+  .df-side .nav-item[aria-current="page"]{background:var(--surface)}
+}
+.brand{font-family:var(--serif);font-size:26px;font-weight:600;letter-spacing:-.01em;padding:0 14px}
+.brand-tag{font-size:13px;color:var(--muted);padding:2px 14px 22px}
+.side-foot{margin-top:auto;padding:14px;font-size:12.5px;color:var(--muted);border-top:1px solid var(--line)}
+
+/* type */
+.df-h1{font-family:var(--serif);font-size:clamp(30px,7vw,42px);line-height:1.1;font-weight:600;letter-spacing:-.015em}
+.df-h2{font-family:var(--serif);font-size:23px;line-height:1.2;font-weight:600}
+.df-h3{font-size:16px;font-weight:600;line-height:1.3}
+.muted{color:var(--muted)}
+.lead{color:var(--muted);font-size:16px;margin-top:6px}
+.small{font-size:14px}
+.num{font-variant-numeric:tabular-nums}
+.page-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:22px}
+.hint{display:block;font-size:13.5px;color:var(--muted);margin-top:6px;line-height:1.4}
+
+/* surfaces */
+.sec{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px;margin-top:16px}
+.sec-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}
+.sec.flat{background:transparent}
+.sec.warn{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));background:color-mix(in srgb,var(--accent) 7%,var(--surface))}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grid2{display:grid;grid-template-columns:1fr;gap:14px}
+@media(min-width:560px){.grid2{grid-template-columns:1fr 1fr}}
+
+/* controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:0 20px;border-radius:13px;border:1px solid var(--line2);background:transparent;font-weight:600;font-size:15.5px;transition:transform .12s,background .15s,border-color .15s}
+.btn:hover:not(:disabled){background:var(--surface2)}
+.btn:active:not(:disabled){transform:scale(.98)}
+.btn.primary{background:var(--btn-bg);color:var(--btn-ink);border-color:var(--btn-bg)}
+.btn.primary:hover:not(:disabled){background:var(--btn-bg);filter:brightness(1.07)}
+.btn.ghost{border-color:transparent}
+.btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,var(--line))}
+.btn.sm{min-height:38px;padding:0 14px;font-size:14px;border-radius:11px}
+.btn.block{width:100%}
+.btn.xl{min-height:56px;font-size:17px;border-radius:16px}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:11px;border:0;background:transparent;color:var(--muted);transition:background .15s,color .15s}
+.icon-btn:hover:not(:disabled){background:var(--surface2);color:var(--text)}
+.field{display:block}
+.field .lbl{display:block;font-size:14px;font-weight:600;margin-bottom:7px}
+.inp{width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:16px;line-height:1.4;transition:border-color .15s}
+.inp:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
+textarea.inp{resize:vertical;min-height:96px}
+.inp.big{min-height:150px;font-size:17px;padding:16px}
+select.inp{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 20px) 55%,calc(100% - 15px) 55%;background-size:5px 5px;background-repeat:no-repeat;padding-right:36px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;min-height:42px;padding:0 15px;border-radius:999px;border:1px solid var(--line2);background:transparent;font-size:15px;transition:background .15s,border-color .15s}
+.chip:hover{background:var(--surface2)}
+.chip[aria-pressed="true"]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.chip.static{min-height:32px;font-size:13.5px;cursor:default;padding:0 12px;border-color:var(--line)}
+.chip.static:hover{background:transparent}
+.seg{display:flex;gap:4px;padding:4px;background:var(--surface2);border-radius:14px}
+.seg button{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;min-height:44px;border:1px solid transparent;border-radius:11px;background:transparent;font-weight:600;font-size:15px;color:var(--muted);transition:all .15s}
+.seg button.on{background:var(--surface);border-color:var(--line2);color:var(--text)}
+.toggle{display:flex;justify-content:space-between;align-items:center;gap:14px}
+.sw{width:48px;height:28px;border-radius:99px;background:var(--line2);border:0;position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:transform .15s}
+.sw[aria-checked="true"]{background:var(--accent)}
+.sw[aria-checked="true"]::after{transform:translateX(20px)}
+.pbar{height:8px;border-radius:99px;background:var(--surface2);overflow:hidden}
+.pbar>i{display:block;height:100%;background:var(--accent);border-radius:99px;transition:width .45s ease}
+.tag{display:inline-flex;align-items:center;font-size:12.5px;font-weight:600;padding:2px 9px;border-radius:99px;background:var(--surface2);color:var(--muted)}
+.tag.now{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent)}
+.err{color:var(--danger);font-size:14px;margin-top:8px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:99px;border:1px solid var(--line);font-size:14px;font-weight:600;white-space:nowrap}
+.pill svg{color:var(--accent)}
+
+/* day strip */
+.strip{display:flex;height:12px;border-radius:7px;overflow:hidden;background:var(--surface2);position:relative}
+.strip i{display:block;height:100%;flex-basis:0;background:var(--c);opacity:.38;transition:opacity .3s;border-right:2px solid var(--surface)}
+.strip i.done{opacity:1}
+.strip i.skipped{opacity:.14}
+.strip i.gap{background:transparent;border-right:0}
+.strip-wrap{position:relative;padding-top:6px}
+.strip-now{position:absolute;top:0;width:2px;height:24px;background:var(--text);border-radius:2px;transform:translateX(-1px)}
+.strip-ends{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-top:8px}
+
+/* timeline */
+.tl-row{display:grid;grid-template-columns:62px 1fr;gap:6px}
+.tl-time{padding-top:17px;text-align:right;font-size:13px;line-height:1.2;color:var(--muted);font-variant-numeric:tabular-nums}
+.tl-body{position:relative;padding:0 0 12px 18px;border-left:2px solid var(--line);margin-left:6px}
+.tl-body::before{content:"";position:absolute;left:-7px;top:20px;width:12px;height:12px;border-radius:50%;background:var(--bg);border:2px solid var(--c,var(--line2))}
+.tl-row.is-done .tl-body::before{background:var(--c)}
+.tl-card{display:flex;gap:12px;align-items:flex-start;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px;transition:opacity .25s,border-color .2s}
+.tl-card.now{border-color:color-mix(in srgb,var(--accent) 60%,var(--line))}
+.tl-row.is-done .tl-card{opacity:.58}
+.tl-row.is-skipped .tl-card{opacity:.5;border-style:dashed}
+.tl-main{flex:1;min-width:0}
+.tl-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tl-title{font-size:17px;font-weight:600;line-height:1.3}
+.tl-row.is-done .tl-title{color:var(--muted)}
+.tl-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13.5px;color:var(--muted);margin-top:5px}
+.tl-note{font-size:14.5px;color:var(--muted);margin-top:8px;line-height:1.45}
+.tl-actions{display:flex;gap:2px;margin:-4px -6px 0 0;flex:none}
+.tl-gap{padding:9px 14px;border:1px dashed var(--line2);border-radius:12px;color:var(--muted);font-size:13.5px;margin-top:-2px}
+.cat-ic{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;background:color-mix(in srgb,var(--c) 18%,transparent);color:var(--c);flex:none}
+.chk{flex:none;width:30px;height:30px;margin-top:1px;border-radius:50%;border:2px solid var(--line2);background:transparent;display:inline-flex;align-items:center;justify-content:center;color:transparent;transition:all .18s}
+.chk:hover{border-color:var(--ok)}
+.chk[aria-pressed="true"]{background:var(--ok);border-color:var(--ok);color:#06231A}
+@media(max-width:420px){.tl-row{grid-template-columns:54px 1fr}.tl-time{font-size:12px}.tl-actions{flex-wrap:wrap;max-width:80px;justify-content:flex-end}}
+
+/* empty / skeleton */
+.empty{text-align:center;padding:44px 22px;border:1px dashed var(--line2);border-radius:20px;margin-top:16px}
+.empty .ic{display:inline-flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:18px;background:var(--surface2);color:var(--accent);margin-bottom:16px}
+.empty p{color:var(--muted);max-width:380px;margin:8px auto 20px}
+.sk{border-radius:14px;background:linear-gradient(90deg,var(--surface),var(--surface2),var(--surface));background-size:200% 100%;animation:sk 1.4s infinite linear}
+@keyframes sk{from{background-position:200% 0}to{background-position:-200% 0}}
+
+/* modal / toast */
+.overlay{position:fixed;inset:0;z-index:60;background:rgba(5,8,12,.6);display:flex;align-items:flex-end;justify-content:center;animation:fade .15s ease}
+.modal{width:100%;max-width:540px;max-height:92vh;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:22px 22px 0 0;animation:sheet .2s ease}
+.modal header{display:flex;justify-content:space-between;align-items:center;padding:16px 18px 6px}
+.modal .mb{padding:10px 18px 18px;overflow:auto;display:flex;flex-direction:column;gap:16px}
+.modal footer{display:flex;justify-content:flex-end;gap:10px;padding:14px 18px calc(14px + env(safe-area-inset-bottom));border-top:1px solid var(--line)}
+@media(min-width:640px){.overlay{align-items:center}.modal{border-radius:22px}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes sheet{from{transform:translateY(16px);opacity:.6}to{transform:none;opacity:1}}
+.toasts{position:fixed;left:0;right:0;bottom:calc(84px + env(safe-area-inset-bottom));z-index:80;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;padding:0 16px}
+@media(min-width:960px){.toasts{bottom:28px;left:256px}}
+.toast{pointer-events:auto;display:flex;align-items:center;gap:10px;background:var(--text);color:var(--bg);padding:12px 16px;border-radius:14px;font-size:15px;font-weight:600;box-shadow:0 8px 30px rgba(0,0,0,.35);animation:sheet .2s ease}
+.toast.error{background:var(--danger);color:#fff}
+
+/* plan / build */
+.sticky-cta{position:sticky;bottom:calc(76px + env(safe-area-inset-bottom));padding:12px 0;margin-top:8px;z-index:5}
+@media(min-width:960px){.sticky-cta{bottom:12px}}
+.build{text-align:center;padding:36px 22px}
+.build ul{list-style:none;margin:26px auto 0;padding:0;max-width:300px;text-align:left;display:flex;flex-direction:column;gap:14px}
+.build li{display:flex;align-items:center;gap:12px;font-size:16px;color:var(--muted);transition:color .3s}
+.build li.on{color:var(--text)}
+.build li .dot{width:24px;height:24px;border-radius:50%;border:2px solid var(--line2);display:inline-flex;align-items:center;justify-content:center;flex:none}
+.build li.on .dot{background:var(--ok);border-color:var(--ok);color:#06231A}
+.build li.cur .dot{border-color:var(--accent);border-top-color:transparent;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.quote{font-family:var(--serif);font-size:21px;line-height:1.35}
+.objective{font-family:var(--serif);font-size:22px;line-height:1.3;margin-top:8px}
+.list{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px}
+.kv{display:grid;grid-template-columns:1fr;gap:16px}
+.commit{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--surface2)}
+
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+@media(min-width:640px){.stats{grid-template-columns:repeat(3,1fr)}}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px}
+.stat b{display:block;font-family:var(--serif);font-size:34px;line-height:1.1;font-weight:600}
+.stat span{font-size:14px;color:var(--muted)}
+.bars{display:flex;align-items:flex-end;gap:5px;height:150px;padding-top:8px}
+.bar-col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%;gap:6px;min-width:0}
+.bar{width:100%;max-width:34px;background:var(--accent);border-radius:7px 7px 3px 3px;min-height:3px;transition:height .5s ease}
+.bar.none{background:var(--line2);opacity:.5}
+.bar-lbl{font-size:12px;color:var(--muted)}
+.hbar{display:grid;grid-template-columns:110px 1fr 56px;gap:10px;align-items:center;font-size:14px;margin-top:10px}
+.hbar .t{text-align:right;color:var(--muted)}
+.hbar .pbar>i{background:var(--c)}
+.insight{padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--surface2)}
+.insight + .insight{margin-top:10px}
+
+/* onboarding */
+.ob{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px}
+.ob-card{width:100%;max-width:520px}
+.dots{display:flex;gap:6px;margin-bottom:28px}
+.dots i{height:4px;flex:1;border-radius:4px;background:var(--line2);transition:background .3s}
+.dots i.on{background:var(--accent)}
+
+@media (prefers-reduced-motion:reduce){.df-root *{animation:none!important;transition:none!important}}
+`;
+/* ============================== CONTEXT =============================== */
+const Ctx = createContext(null);
+const useApp = () => useContext(Ctx);
+/* ============================ UI PRIMITIVES ============================ */
+function Btn({ variant = "secondary", size, icon: Icon, children, className = "", ...rest }) {
+    return (React.createElement("button", { type: "button", className: `btn ${variant} ${size || ""} ${className}`, ...rest },
+        Icon && React.createElement(Icon, { size: size === "sm" ? 16 : 18, "aria-hidden": "true" }),
+        children));
+}
+function IconBtn({ icon: Icon, label, ...rest }) {
+    return (React.createElement("button", { type: "button", className: "icon-btn", "aria-label": label, title: label, ...rest },
+        React.createElement(Icon, { size: 18, "aria-hidden": "true" })));
+}
+function Field({ label, hint, children, group }) {
+    const Tag = group ? "div" : "label";
+    return (React.createElement(Tag, { className: "field", role: group ? "group" : undefined, "aria-label": group ? label : undefined },
+        React.createElement("span", { className: "lbl" }, label),
+        children,
+        hint && React.createElement("span", { className: "hint" }, hint)));
+}
+function Seg({ value, options, onChange, label }) {
+    return (React.createElement("div", { className: "seg", role: "radiogroup", "aria-label": label }, options.map((o) => (React.createElement("button", { key: o.value, type: "button", role: "radio", "aria-checked": value === o.value, className: value === o.value ? "on" : "", onClick: () => onChange(o.value) },
+        o.icon && React.createElement(o.icon, { size: 16, "aria-hidden": "true" }),
+        o.label)))));
+}
+function Chip({ on, onClick, children }) {
+    return React.createElement("button", { type: "button", className: "chip", "aria-pressed": !!on, onClick: onClick }, children);
+}
+function PBar({ value, label }) {
+    const v = clamp(value, 0, 100);
+    return React.createElement("div", { className: "pbar", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(v), "aria-label": label },
+        React.createElement("i", { style: { width: `${v}%` } }));
+}
+function Empty({ icon: Icon, title, body, children }) {
+    return (React.createElement("div", { className: "empty" },
+        React.createElement("span", { className: "ic" },
+            React.createElement(Icon, { size: 26, "aria-hidden": "true" })),
+        React.createElement("h2", { className: "df-h2" }, title),
+        React.createElement("p", null, body),
+        children));
+}
+function CatIcon({ cat, size = 15 }) {
+    const c = CATS[cat] || CATS.routine;
+    return React.createElement("span", { className: "cat-ic", style: { "--c": c.color } },
+        React.createElement(c.Icon, { size: size, "aria-hidden": "true" }));
+}
+function NumField({ value, onChange, min = 0, max = 600, step = 5, label, hint, suffix = "min" }) {
+    const [t, setT] = useState(String(value));
+    useEffect(() => { setT(String(value)); }, [value]);
+    const commit = () => {
+        const n = clamp(Math.round(Number(t)), min, max);
+        if (isNaN(n))
+            setT(String(value));
+        else {
+            setT(String(n));
+            onChange(n);
+        }
+    };
+    return (React.createElement(Field, { label: label, hint: hint },
+        React.createElement("div", { className: "row", style: { flexWrap: "nowrap" } },
+            React.createElement("input", { className: "inp", type: "number", inputMode: "numeric", min: min, max: max, step: step, value: t, onChange: (e) => setT(e.target.value), onBlur: commit, onKeyDown: (e) => { if (e.key === "Enter")
+                    commit(); } }),
+            React.createElement("span", { className: "muted small" }, suffix))));
+}
+function Modal({ title, onClose, children, footer }) {
+    const ref = useRef(null);
+    useEffect(() => {
+        const prev = document.activeElement;
+        const el = ref.current;
+        const first = el && (el.querySelector(".mb input, .mb select, .mb textarea") || el.querySelector("footer button"));
+        if (first)
+            first.focus();
+        const onKey = (e) => {
+            if (e.key === "Escape") {
+                e.stopPropagation();
+                onClose();
+                return;
+            }
+            if (e.key !== "Tab" || !el)
+                return;
+            const f = [...el.querySelectorAll("button:not(:disabled), input, select, textarea, [href]")];
+            if (!f.length)
+                return;
+            const a = f[0], z = f[f.length - 1];
+            if (e.shiftKey && document.activeElement === a) {
+                e.preventDefault();
+                z.focus();
+            }
+            else if (!e.shiftKey && document.activeElement === z) {
+                e.preventDefault();
+                a.focus();
+            }
+        };
+        document.addEventListener("keydown", onKey);
+        return () => { document.removeEventListener("keydown", onKey); if (prev && prev.focus)
+            prev.focus(); };
+        // eslint-disable-next-line
+    }, []);
+    return (React.createElement("div", { className: "overlay", onMouseDown: (e) => { if (e.target === e.currentTarget)
+            onClose(); } },
+        React.createElement("div", { className: "modal", role: "dialog", "aria-modal": "true", "aria-label": title, ref: ref },
+            React.createElement("header", null,
+                React.createElement("h2", { className: "df-h2" }, title),
+                React.createElement(IconBtn, { icon: X, label: "Close", onClick: onClose })),
+            React.createElement("div", { className: "mb" }, children),
+            footer && React.createElement("footer", null, footer))));
+}
+/* ============================== DAY STRIP ============================== */
+function DayStrip({ plan, now, isToday }) {
+    const { fmt } = useApp();
+    const items = plan.items.filter(countable).slice().sort((a, b) => a.start - b.start);
+    const start = plan.wake, end = plan.bed, total = Math.max(1, end - start);
+    const segs = [];
+    let cursor = start;
+    items.forEach((it) => {
+        if (it.start > cursor)
+            segs.push({ gap: true, w: it.start - cursor, k: `g${it.id}` });
+        const s = Math.max(it.start, cursor), e = Math.min(it.end, end);
+        if (e > s) {
+            segs.push({ it, w: e - s, k: it.id });
+            cursor = e;
+        }
+    });
+    if (cursor < end)
+        segs.push({ gap: true, w: end - cursor, k: "tail" });
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const showNow = isToday && nowMin >= start && nowMin <= end;
+    const st = planStats(plan);
+    return (React.createElement("div", null,
+        React.createElement("div", { className: "strip-wrap" },
+            showNow && React.createElement("span", { className: "strip-now", style: { left: `${((nowMin - start) / total) * 100}%` }, "aria-hidden": "true" }),
+            React.createElement("div", { className: "strip", role: "img", "aria-label": `Your day from ${fmt(start)} to ${fmt(end)}. ${st.done} of ${st.total} items done.` }, segs.map((s) => s.gap
+                ? React.createElement("i", { key: s.k, className: "gap", style: { flexGrow: s.w } })
+                : React.createElement("i", { key: s.k, className: s.it.status, style: { flexGrow: s.w, "--c": CATS[s.it.category].color } })))),
+        React.createElement("div", { className: "strip-ends" },
+            React.createElement("span", null, fmt(start)),
+            React.createElement("span", null, fmt(end)))));
+}
+/* =============================== TIMELINE ============================== */
+function ItemRow({ it, mode, isNow, onToggle, onSkip, onEdit, onResched, onDelete }) {
+    const { fmt } = useApp();
+    const cat = CATS[it.category] || CATS.routine;
+    const done = it.status === "done", skipped = it.status === "skipped";
+    const isSleep = it.category === "sleep";
+    return (React.createElement("div", { className: `tl-row ${done ? "is-done" : ""} ${skipped ? "is-skipped" : ""}`, style: { "--c": cat.color } },
+        React.createElement("div", { className: "tl-time" }, fmt(it.start)),
+        React.createElement("div", { className: "tl-body" },
+            React.createElement("article", { className: `tl-card ${isNow ? "now" : ""}` },
+                mode === "today" && !isSleep && (React.createElement("button", { type: "button", className: "chk", "aria-pressed": done, "aria-label": done ? `Mark ${it.title} as not done` : `Mark ${it.title} as done`, onClick: () => onToggle(it) },
+                    React.createElement(Check, { size: 17, strokeWidth: 3, "aria-hidden": "true" }))),
+                React.createElement("div", { className: "tl-main" },
+                    React.createElement("div", { className: "tl-top" },
+                        React.createElement("h3", { className: "tl-title" }, it.title),
+                        isNow && React.createElement("span", { className: "tag now" }, "Now"),
+                        skipped && React.createElement("span", { className: "tag" }, "Skipped")),
+                    React.createElement("p", { className: "tl-meta" },
+                        React.createElement(CatIcon, { cat: it.category }),
+                        React.createElement("span", null, cat.label),
+                        React.createElement("span", { "aria-hidden": "true" }, "\u2022"),
+                        React.createElement("span", { className: "num" }, fmtDur(it.end - it.start)),
+                        React.createElement("span", { "aria-hidden": "true" }, "\u2022"),
+                        React.createElement("span", { className: "num" },
+                            fmt(it.start),
+                            " to ",
+                            fmt(it.end)),
+                        it.estimate && React.createElement("span", { className: "tag" }, "estimate")),
+                    it.note && React.createElement("p", { className: "tl-note" }, it.note)),
+                mode === "today" && !isSleep && (React.createElement("div", { className: "tl-actions" },
+                    React.createElement(IconBtn, { icon: Clock, label: `Reschedule ${it.title}`, onClick: () => onResched(it) }),
+                    React.createElement(IconBtn, { icon: Pencil, label: `Edit ${it.title}`, onClick: () => onEdit(it) }),
+                    React.createElement(IconBtn, { icon: skipped ? Undo2 : SkipForward, label: skipped ? `Undo skip for ${it.title}` : `Skip ${it.title}`, onClick: () => onSkip(it) }))),
+                mode === "edit" && (React.createElement("div", { className: "tl-actions" },
+                    React.createElement(IconBtn, { icon: Pencil, label: `Edit ${it.title}`, onClick: () => onEdit(it) }),
+                    !isSleep && React.createElement(IconBtn, { icon: Trash2, label: `Remove ${it.title}`, onClick: () => onDelete(it) })))))));
+}
+function Timeline({ items, mode = "view", now, isToday, ...h }) {
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const list = items.slice().sort((a, b) => a.start - b.start);
+    const rows = [];
+    let cursor = null;
+    list.forEach((it) => {
+        if (cursor !== null && it.category !== "sleep" && it.start - cursor >= 25) {
+            rows.push(React.createElement("div", { className: "tl-row", key: `g${it.id}` },
+                React.createElement("div", { className: "tl-time" }),
+                React.createElement("div", { className: "tl-body", style: { "--c": "var(--line2)" } },
+                    React.createElement("div", { className: "tl-gap" },
+                        fmtDur(it.start - cursor),
+                        " open. Buffer for delays, rest or a call."))));
+        }
+        const isNow = isToday && it.category !== "sleep" && nowMin >= it.start && nowMin < it.end;
+        rows.push(React.createElement(ItemRow, { key: it.id, it: it, mode: mode, isNow: isNow, ...h }));
+        if (it.category !== "sleep")
+            cursor = Math.max(cursor === null ? 0 : cursor, it.end);
+    });
+    return React.createElement("div", { className: "tl" }, rows);
+}
+/* ============================ ITEM MODALS ============================== */
+function ItemEditor({ item, isNew, onSave, onClose }) {
+    const [v, setV] = useState({
+        title: item.title || "", category: item.category || "growth",
+        start: toHHMM(item.start ?? 540), end: toHHMM(item.end ?? 600), note: item.note || "",
+    });
+    const sleep = item.category === "sleep";
+    const s = toMin(v.start), e = toMin(v.end);
+    const err = !v.title.trim() ? "Give it a name." : !sleep && e <= s ? "The end time must be after the start time." : "";
+    const save = () => onSave({ ...item, title: v.title.trim(), category: v.category, start: s, end: sleep && e <= s ? e + DAY : e, note: v.note.trim(), status: item.status || "pending" });
+    return (React.createElement(Modal, { title: isNew ? "Add an item" : "Edit item", onClose: onClose, footer: React.createElement(React.Fragment, null,
+            React.createElement(Btn, { variant: "ghost", onClick: onClose }, "Cancel"),
+            React.createElement(Btn, { variant: "primary", disabled: !!err, onClick: save }, isNew ? "Add item" : "Save changes")) },
+        React.createElement(Field, { label: "Name" },
+            React.createElement("input", { className: "inp", value: v.title, onChange: (ev) => setV({ ...v, title: ev.target.value }) })),
+        !sleep && (React.createElement(Field, { label: "Category" },
+            React.createElement("select", { className: "inp", value: v.category, onChange: (ev) => setV({ ...v, category: ev.target.value }) }, Object.entries(CATS).filter(([k]) => k !== "sleep").map(([k, c]) => React.createElement("option", { key: k, value: k }, c.label))))),
+        React.createElement("div", { className: "grid2" },
+            React.createElement(Field, { label: "Starts" },
+                React.createElement("input", { className: "inp", type: "time", value: v.start, onChange: (ev) => setV({ ...v, start: ev.target.value }) })),
+            React.createElement(Field, { label: "Ends" },
+                React.createElement("input", { className: "inp", type: "time", value: v.end, onChange: (ev) => setV({ ...v, end: ev.target.value }) }))),
+        React.createElement(Field, { label: "Notes" },
+            React.createElement("textarea", { className: "inp", value: v.note, onChange: (ev) => setV({ ...v, note: ev.target.value }) })),
+        err && React.createElement("p", { className: "err", role: "alert" }, err)));
+}
+function RescheduleModal({ item, onSave, onClose }) {
+    const { fmt } = useApp();
+    const dur = item.end - item.start;
+    const [start, setStart] = useState(item.start);
+    const shift = (n) => setStart((s) => clamp(s + n, 0, DAY - 5));
+    return (React.createElement(Modal, { title: `Reschedule: ${item.title}`, onClose: onClose, footer: React.createElement(React.Fragment, null,
+            React.createElement(Btn, { variant: "ghost", onClick: onClose }, "Cancel"),
+            React.createElement(Btn, { variant: "primary", onClick: () => onSave({ ...item, start, end: start + dur }) }, "Move it")) },
+        React.createElement(Field, { label: "New start time" },
+            React.createElement("input", { className: "inp", type: "time", value: toHHMM(start), onChange: (e) => setStart(toMin(e.target.value)) })),
+        React.createElement("div", { className: "chips", role: "group", "aria-label": "Quick shifts" }, [-30, -15, 15, 30, 60].map((n) => React.createElement("button", { key: n, type: "button", className: "chip", onClick: () => shift(n) },
+            n > 0 ? `+${n}` : n,
+            " min"))),
+        React.createElement("p", { className: "muted small" },
+            "It keeps its ",
+            fmtDur(dur),
+            " length and will run ",
+            fmt(start),
+            " to ",
+            fmt(start + dur),
+            ".")));
+}
+/* ============================ SHARED HELPERS ============================ */
+function computeStreak(plans, todayKey) {
+    const ok = (k) => { const p = plans[k]; return p && p.accepted && planStats(p).pct >= 60; };
+    let d = todayKey, n = 0;
+    if (!ok(d))
+        d = addDays(d, -1);
+    while (ok(d)) {
+        n++;
+        d = addDays(d, -1);
+    }
+    return n;
+}
+const mapItems = (s, date, fn) => ({ ...s, plans: { ...s.plans, [date]: { ...s.plans[date], items: fn(s.plans[date].items) } } });
+const prioCat = (t) => (/forex|backtest|trade/i.test(t) ? "forex" : /read/i.test(t) ? "reading" : /workout|walk|movement|circuit|run/i.test(t) ? "fitness" : /lights out|sleep/i.test(t) ? "sleep" : /school|study/i.test(t) ? "school" : "growth");
+const MODE_LABEL = { full: "Full day", light: "Light day", minimum: "Minimum Day" };
+/* ============================== ONBOARDING ============================== */
+function Onboarding({ onFinish }) {
+    const [step, setStep] = useState(0);
+    const [d, setD] = useState({ name: "", goals: ["forex", "reading", "exercise"], wake: "06:30", bed: "22:30", minutes: 120 });
+    const last = 4;
+    const sleepMin = (() => { let w = toMin(d.wake), b = toMin(d.bed); if (b <= w)
+        b += DAY; return w + DAY - b; })();
+    const can = step === 0 ? d.name.trim().length > 0 : step === 1 ? d.goals.length > 0 : true;
+    const next = () => { if (!can)
+        return; if (step === last)
+        onFinish(d);
+    else
+        setStep(step + 1); };
+    const toggle = (k) => setD({ ...d, goals: d.goals.includes(k) ? d.goals.filter((x) => x !== k) : [...d.goals, k] });
+    const onKey = (e) => { if (e.key === "Enter") {
+        e.preventDefault();
+        next();
+    } };
+    return (React.createElement("div", { className: "ob" },
+        React.createElement("div", { className: "ob-card" },
+            React.createElement("p", { className: "brand", style: { padding: 0 } }, "DayForge"),
+            React.createElement("p", { className: "muted", style: { marginBottom: 28 } }, "Plan your day. Build yourself."),
+            React.createElement("div", { className: "dots", role: "progressbar", "aria-valuemin": 1, "aria-valuemax": 5, "aria-valuenow": step + 1, "aria-label": `Step ${step + 1} of 5` }, [0, 1, 2, 3, 4].map((i) => React.createElement("i", { key: i, className: i <= step ? "on" : "" }))),
+            step === 0 && (React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" }, "What's your name?"),
+                React.createElement("p", { className: "lead" }, "I'll use it to greet you each morning."),
+                React.createElement("div", { style: { marginTop: 22 } },
+                    React.createElement("input", { className: "inp", "aria-label": "Your name", autoFocus: true, placeholder: "Your first name", value: d.name, maxLength: 30, onChange: (e) => setD({ ...d, name: e.target.value }), onKeyDown: onKey })))),
+            step === 1 && (React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" }, "What are your biggest goals?"),
+                React.createElement("p", { className: "lead" }, "Pick everything you want your days to build toward."),
+                React.createElement("div", { className: "chips", style: { marginTop: 22 } }, GOAL_OPTIONS.map((g) => React.createElement(Chip, { key: g.key, on: d.goals.includes(g.key), onClick: () => toggle(g.key) }, g.label))))),
+            step === 2 && (React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" }, "What time do you normally wake up?"),
+                React.createElement("p", { className: "lead" }, "Be honest. A plan you can follow beats a plan you wish you could."),
+                React.createElement("div", { style: { marginTop: 22 } },
+                    React.createElement("input", { className: "inp", type: "time", "aria-label": "Wake-up time", value: d.wake, onChange: (e) => setD({ ...d, wake: e.target.value }), onKeyDown: onKey })))),
+            step === 3 && (React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" }, "What time do you normally sleep?"),
+                React.createElement("p", { className: "lead" }, "I protect your sleep first and plan everything else around it."),
+                React.createElement("div", { style: { marginTop: 22 } },
+                    React.createElement("input", { className: "inp", type: "time", "aria-label": "Bedtime", value: d.bed, onChange: (e) => setD({ ...d, bed: e.target.value }), onKeyDown: onKey })),
+                React.createElement("p", { className: "hint", role: "status" },
+                    "That is ",
+                    fmtDur(sleepMin),
+                    " of sleep.",
+                    sleepMin < 420 ? " Aim for closer to 8 hours if you can." : ""))),
+            step === 4 && (React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" }, "How much time do you want to spend daily on your main goals?"),
+                React.createElement("p", { className: "lead" }, "Forex and reading together. Exercise is set separately. You can change this in Settings."),
+                React.createElement("div", { className: "chips", style: { marginTop: 22 } }, [[60, "1 hour"], [120, "2 hours"], [180, "3 hours"], [270, "4.5 hours"]].map(([m, l]) => React.createElement(Chip, { key: m, on: d.minutes === m, onClick: () => setD({ ...d, minutes: m }) }, l))))),
+            React.createElement("div", { className: "row", style: { marginTop: 34, justifyContent: "space-between" } },
+                step > 0 ? React.createElement(Btn, { variant: "ghost", icon: ChevronLeft, onClick: () => setStep(step - 1) }, "Back") : React.createElement("span", null),
+                React.createElement(Btn, { variant: "primary", disabled: !can, onClick: next }, step === last ? "Build my first plan" : "Continue")))));
+}
+/* ================================= TODAY ================================ */
+function TodayScreen() {
+    const { state, update, now, todayKey, go, setComposer, toast } = useApp();
+    const { fmt } = useApp();
+    const [edit, setEdit] = useState(null);
+    const [resch, setResch] = useState(null);
+    const plan = state.plans[todayKey];
+    const tomorrow = addDays(todayKey, 1);
+    const tPlan = state.plans[tomorrow];
+    const hour = now.getHours();
+    const name = (state.user.name || "").trim();
+    const greet = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+    const streak = useMemo(() => computeStreak(state.plans, todayKey), [state.plans, todayKey]);
+    const st = plan ? planStats(plan) : null;
+    const patch = (it, p) => update((s) => mapItems(s, todayKey, (items) => items.map((x) => (x.id === it.id ? { ...x, ...p } : x))));
+    const startPlan = (target) => { setComposer((c) => ({ ...c, target, view: "form" })); go("plan"); };
+    const saveItem = (it) => { update((s) => mapItems(s, todayKey, (items) => items.map((x) => (x.id === it.id ? it : x)))); setEdit(null); setResch(null); toast("Schedule updated"); };
+    return (React.createElement("div", { className: "df-page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" },
+                    greet,
+                    name ? `, ${name}` : ""),
+                React.createElement("p", { className: "lead" }, longDate(todayKey))),
+            streak > 0 && React.createElement("span", { className: "pill", title: "Days in a row with 60% or more completed" },
+                React.createElement(Flame, { size: 16, "aria-hidden": "true" }),
+                streak,
+                " day streak")),
+        !plan && (Object.keys(state.plans).length === 0 && !state.draft ? (React.createElement(Empty, { icon: Sparkles, title: "Your first day starts with a plan", body: "Tell DayForge what is on your plate. It builds a realistic schedule around your sleep, commitments and goals." },
+            React.createElement("div", { className: "row", style: { justifyContent: "center" } },
+                React.createElement(Btn, { variant: "primary", onClick: () => startPlan("today") }, "Plan today"),
+                React.createElement(Btn, { onClick: () => startPlan("tomorrow") }, "Plan tomorrow")))) : (React.createElement(Empty, { icon: CalendarDays, title: "Nothing planned for today", body: state.draft ? "You have a plan waiting for your approval in the Plan tab." : "Build a plan now, or get tomorrow ready tonight." },
+            React.createElement("div", { className: "row", style: { justifyContent: "center" } },
+                React.createElement(Btn, { variant: "primary", onClick: () => (state.draft ? go("plan") : startPlan("today")) }, state.draft ? "Review waiting plan" : "Plan today"))))),
+        plan && (React.createElement(React.Fragment, null,
+            React.createElement("section", { className: "sec", "aria-labelledby": "focus-h" },
+                React.createElement("div", { className: "sec-head" },
+                    React.createElement("h2", { className: "df-h2", id: "focus-h" }, hour < 12 ? "Here's what matters today." : "Today's focus")),
+                React.createElement("ul", { className: "list", style: { listStyle: "none", padding: 0 } }, plan.priorities.map((p, i) => (React.createElement("li", { key: i, className: "row", style: { flexWrap: "nowrap", alignItems: "flex-start" } },
+                    React.createElement(CatIcon, { cat: prioCat(p), size: 16 }),
+                    React.createElement("span", { style: { fontSize: 16.5 } }, p)))))),
+            React.createElement("section", { className: "sec", "aria-labelledby": "prog-h" },
+                React.createElement("div", { className: "sec-head" },
+                    React.createElement("h2", { className: "df-h3", id: "prog-h" }, "Daily progress"),
+                    React.createElement("span", { className: "df-h2 num" },
+                        st.pct,
+                        "%")),
+                React.createElement(PBar, { value: st.pct, label: "Daily progress" }),
+                React.createElement("p", { className: "muted small", style: { marginTop: 10 } },
+                    st.done,
+                    " of ",
+                    st.total,
+                    " done",
+                    st.skipped ? `, ${st.skipped} skipped` : ""),
+                React.createElement("div", { style: { marginTop: 16 } },
+                    React.createElement(DayStrip, { plan: plan, now: now, isToday: true }))),
+            st.pending === 0 ? (React.createElement("section", { className: "sec warn" },
+                React.createElement("div", { className: "row", style: { flexWrap: "nowrap", alignItems: "flex-start" } },
+                    React.createElement(CheckCircle2, { size: 24, color: "var(--ok)", "aria-hidden": "true" }),
+                    React.createElement("div", { style: { flex: 1 } },
+                        React.createElement("h2", { className: "df-h3" }, "Day complete"),
+                        React.createElement("p", { className: "muted small", style: { marginTop: 4 } },
+                            st.done,
+                            " of ",
+                            st.total,
+                            " done. Write your review while it is fresh."),
+                        React.createElement(Btn, { size: "sm", variant: "primary", style: { marginTop: 12 }, onClick: () => go("journal") }, "Review your day"))))) : hour >= 20 && (React.createElement("section", { className: "sec warn" },
+                React.createElement("h2", { className: "df-h3" }, "Day complete?"),
+                React.createElement("p", { className: "muted small", style: { marginTop: 4 } }, "Answer five short questions about today. It makes tomorrow's plan better."),
+                React.createElement(Btn, { size: "sm", variant: "primary", style: { marginTop: 12 }, onClick: () => go("journal") }, "Review your day"))),
+            React.createElement("h2", { className: "df-h2", style: { margin: "30px 0 14px" } }, "Schedule"),
+            React.createElement(Timeline, { items: plan.items, mode: "today", now: now, isToday: true, onToggle: (it) => patch(it, { status: it.status === "done" ? "pending" : "done" }), onSkip: (it) => patch(it, { status: it.status === "skipped" ? "pending" : "skipped" }), onEdit: setEdit, onResched: setResch }))),
+        (tPlan || hour >= 17) && (React.createElement("section", { className: "sec" }, tPlan ? (React.createElement("div", { className: "row", style: { justifyContent: "space-between" } },
+            React.createElement("div", null,
+                React.createElement("h2", { className: "df-h3" }, "Tomorrow is planned"),
+                React.createElement("p", { className: "muted small", style: { marginTop: 4 } },
+                    tPlan.items.filter(countable).length,
+                    " items, starting with ",
+                    tPlan.items.filter(countable)[0]?.title.toLowerCase(),
+                    " at ",
+                    fmt(tPlan.wake),
+                    ".")),
+            React.createElement(Btn, { size: "sm", onClick: () => startPlan("tomorrow") }, "Re-plan"))) : (React.createElement("div", { className: "row", style: { justifyContent: "space-between" } },
+            React.createElement("div", null,
+                React.createElement("h2", { className: "df-h3" }, "Get tomorrow ready"),
+                React.createElement("p", { className: "muted small", style: { marginTop: 4 } }, "Two minutes tonight saves a messy morning.")),
+            React.createElement(Btn, { size: "sm", variant: "primary", onClick: () => startPlan("tomorrow") }, "Plan tomorrow"))))),
+        edit && React.createElement(ItemEditor, { item: edit, onSave: saveItem, onClose: () => setEdit(null) }),
+        resch && React.createElement(RescheduleModal, { item: resch, onSave: saveItem, onClose: () => setResch(null) })));
+}
+/* ================================= PLAN ================================= */
+function CommitEditor({ initial, onSave, onClose }) {
+    const [v, setV] = useState({
+        id: initial.id || uid(), type: initial.type, name: initial.name || "", start: initial.start, end: initial.end,
+        location: initial.location || "", notes: initial.notes || "", travelMin: initial.travelMin ?? "",
+    });
+    const err = toMin(v.end) <= toMin(v.start) ? "The end time must be after the start time." : "";
+    return (React.createElement(Modal, { title: initial.id ? "Edit commitment" : "Add a commitment", onClose: onClose, footer: React.createElement(React.Fragment, null,
+            React.createElement(Btn, { variant: "ghost", onClick: onClose }, "Cancel"),
+            React.createElement(Btn, { variant: "primary", disabled: !!err, onClick: () => onSave(v) }, "Save commitment")) },
+        React.createElement(Field, { label: "Type" },
+            React.createElement("select", { className: "inp", value: v.type, onChange: (e) => setV({ ...v, type: e.target.value }) }, COMMIT_TYPES.map((t) => React.createElement("option", { key: t.key, value: t.key }, t.label)))),
+        React.createElement(Field, { label: "Name", hint: "Optional. Leave empty to use the type." },
+            React.createElement("input", { className: "inp", value: v.name, onChange: (e) => setV({ ...v, name: e.target.value }) })),
+        React.createElement("div", { className: "grid2" },
+            React.createElement(Field, { label: "Starts" },
+                React.createElement("input", { className: "inp", type: "time", value: v.start, onChange: (e) => setV({ ...v, start: e.target.value }) })),
+            React.createElement(Field, { label: "Ends" },
+                React.createElement("input", { className: "inp", type: "time", value: v.end, onChange: (e) => setV({ ...v, end: e.target.value }) }))),
+        React.createElement(Field, { label: "Location" },
+            React.createElement("input", { className: "inp", value: v.location, onChange: (e) => setV({ ...v, location: e.target.value }) })),
+        React.createElement(Field, { label: "Travel time one way (minutes)", hint: "Optional. Leave empty and I will estimate it and mark it as an estimate." },
+            React.createElement("input", { className: "inp", type: "number", min: "0", max: "180", inputMode: "numeric", value: v.travelMin, onChange: (e) => setV({ ...v, travelMin: e.target.value }) })),
+        React.createElement(Field, { label: "Notes" },
+            React.createElement("textarea", { className: "inp", value: v.notes, onChange: (e) => setV({ ...v, notes: e.target.value }) })),
+        err && React.createElement("p", { className: "err", role: "alert" }, err)));
+}
+function PlanForm() {
+    const { state, composer: c, setComposer, runBuild, behavior, todayKey, fmt, go } = useApp();
+    const [editing, setEditing] = useState(null);
+    const set = (p) => setComposer((x) => ({ ...x, ...p }));
+    const date = c.target === "today" ? todayKey : addDays(todayKey, 1);
+    const wake = c.wake ?? state.user.wake, bed = c.bed ?? state.user.bed;
+    const parsed = useMemo(() => parseNote(c.text), [c.text]);
+    const detected = parsed.commitments.filter((d) => !c.commitments.some((x) => x.type === d.type && Math.abs(toMin(x.start) - toMin(d.start)) < 60));
+    const energy = c.energyTouched ? c.energy : parsed.energy || c.energy;
+    const goals = [...new Set([...c.goals, ...parsed.goals])];
+    const sleepMin = (() => { let w = toMin(wake), b = toMin(bed); if (b <= w)
+        b += DAY; return w + DAY - b; })();
+    const saveCommit = (v) => {
+        set({ commitments: c.commitments.some((x) => x.id === v.id) ? c.commitments.map((x) => (x.id === v.id ? v : x)) : [...c.commitments, v] });
+        setEditing(null);
+    };
+    const build = () => {
+        const labels = [
+            ...detected.map((d) => `${d.name} ${fmt(toMin(d.start))} to ${fmt(toMin(d.end))}${d.assumed ? " (assumed 1 hour)" : ""}`),
+            ...parsed.goals.filter((g) => !c.goals.includes(g)).map((g) => `${GOAL_OPTIONS.find((o) => o.key === g).label} goal`),
+            ...(!c.energyTouched && parsed.energy ? [`${parsed.energy} energy`] : []),
+        ];
+        runBuild({
+            date, text: c.text, goals, energy, wake, bed, prefs: state.prefs, behavior, variant: 0, detected: labels,
+            commitments: [...c.commitments, ...detected.map((d) => ({ id: uid(), type: d.type, name: d.name, start: d.start, end: d.end, location: "", notes: "", travelMin: "" }))],
+        });
+    };
+    return (React.createElement("div", { className: "df-page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" },
+                    "Plan ",
+                    c.target === "today" ? "today" : "tomorrow"),
+                React.createElement("p", { className: "lead" },
+                    "Tell me what ",
+                    c.target === "today" ? "today" : "tomorrow",
+                    " looks like. I'll organize the rest."))),
+        state.draft && (React.createElement("section", { className: "sec warn" },
+            React.createElement("div", { className: "row", style: { justifyContent: "space-between" } },
+                React.createElement("div", null,
+                    React.createElement("h2", { className: "df-h3" }, "A plan is waiting for approval"),
+                    React.createElement("p", { className: "muted small" },
+                        "For ",
+                        longDate(state.draft.plan.date))),
+                React.createElement(Btn, { size: "sm", variant: "primary", onClick: () => set({ view: "result" }) }, "Open it")))),
+        React.createElement("div", { style: { marginTop: 16 } },
+            React.createElement(Seg, { label: "Day to plan", value: c.target, onChange: (v) => set({ target: v }), options: [{ value: "tomorrow", label: `Tomorrow, ${shortDate(addDays(todayKey, 1))}` }, { value: "today", label: `Today, ${shortDate(todayKey)}` }] })),
+        React.createElement("section", { className: "sec" },
+            React.createElement(Field, { label: "What's on your plate?" },
+                React.createElement("textarea", { className: "inp big", value: c.text, onChange: (e) => set({ text: e.target.value }), placeholder: "Tomorrow I have school from 8\u20132, work from 4\u20137, and I want to backtest, read and exercise\u2026" })),
+            (detected.length > 0 || parsed.goals.length > 0 || (!c.energyTouched && parsed.energy)) && (React.createElement("div", { style: { marginTop: 14 }, "aria-live": "polite" },
+                React.createElement("p", { className: "muted small", style: { marginBottom: 8 } }, "I picked up from your note:"),
+                React.createElement("div", { className: "chips" },
+                    detected.map((d, i) => React.createElement("span", { className: "chip static", key: i },
+                        React.createElement(CatIcon, { cat: d.type, size: 13 }),
+                        d.name,
+                        " ",
+                        fmt(toMin(d.start)),
+                        " to ",
+                        fmt(toMin(d.end)),
+                        d.assumed ? ", about 1 h" : "")),
+                    parsed.goals.map((g) => React.createElement("span", { className: "chip static", key: g }, GOAL_OPTIONS.find((o) => o.key === g).label)),
+                    !c.energyTouched && parsed.energy && React.createElement("span", { className: "chip static" },
+                        cap(parsed.energy),
+                        " energy")),
+                React.createElement("p", { className: "hint" }, "Wrong? Edit your note, or add the commitment below to set exact times.")))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Fixed commitments")),
+            c.commitments.length > 0 && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 } }, c.commitments.map((x) => (React.createElement("div", { className: "commit", key: x.id },
+                React.createElement(CatIcon, { cat: x.type, size: 16 }),
+                React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                    React.createElement("p", { style: { fontWeight: 600 } }, x.name || CATS[x.type].label),
+                    React.createElement("p", { className: "muted small num" },
+                        fmt(toMin(x.start)),
+                        " to ",
+                        fmt(toMin(x.end)),
+                        x.location ? `, ${x.location}` : "")),
+                React.createElement(IconBtn, { icon: Pencil, label: `Edit ${x.name || CATS[x.type].label}`, onClick: () => setEditing(x) }),
+                React.createElement(IconBtn, { icon: Trash2, label: `Remove ${x.name || CATS[x.type].label}`, onClick: () => set({ commitments: c.commitments.filter((y) => y.id !== x.id) }) })))))),
+            React.createElement("p", { className: "muted small", style: { marginBottom: 10 } }, c.commitments.length ? "Add another:" : "Add anything that cannot move:"),
+            React.createElement("div", { className: "chips" }, COMMIT_TYPES.map((t) => (React.createElement("button", { key: t.key, type: "button", className: "chip", onClick: () => setEditing({ type: t.key, start: t.start, end: t.end }) },
+                React.createElement(Plus, { size: 15, "aria-hidden": "true" }),
+                t.label))))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Personal goals")),
+            React.createElement("div", { className: "chips", role: "group", "aria-label": "Personal goals" }, GOAL_OPTIONS.map((g) => React.createElement(Chip, { key: g.key, on: goals.includes(g.key), onClick: () => set({ goals: c.goals.includes(g.key) ? c.goals.filter((x) => x !== g.key) : [...c.goals, g.key] }) }, g.label))),
+            React.createElement("p", { className: "hint" }, "Picked goals get a full-size block. Forex, reading and exercise you leave out still get a small one so the habit survives. Pick nothing for the default balance.")),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Energy level")),
+            React.createElement(Seg, { label: "Energy level", value: energy, onChange: (v) => set({ energy: v, energyTouched: true }), options: [{ value: "low", label: "Low", icon: BatteryLow }, { value: "normal", label: "Normal", icon: BatteryMedium }, { value: "high", label: "High", icon: BatteryFull }] }),
+            React.createElement("p", { className: "hint" }, energy === "low" ? "Lighter targets, an easy workout, sleep first." : energy === "high" ? "Your hardest work goes into your best hours." : "A balanced day.")),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Sleep")),
+            React.createElement("div", { className: "grid2" },
+                React.createElement(Field, { label: "Wake-up time" },
+                    React.createElement("input", { className: "inp", type: "time", value: wake, onChange: (e) => set({ wake: e.target.value }) })),
+                React.createElement(Field, { label: "Bedtime" },
+                    React.createElement("input", { className: "inp", type: "time", value: bed, onChange: (e) => set({ bed: e.target.value }) }))),
+            React.createElement("p", { className: "hint", role: "status" },
+                fmtDur(sleepMin),
+                " of sleep.",
+                sleepMin < 420 ? " That is on the short side. I would not shrink it further." : "")),
+        React.createElement("div", { className: "sticky-cta" },
+            React.createElement(Btn, { variant: "primary", size: "xl", className: "block", icon: Sparkles, onClick: build }, "Build my day")),
+        editing && React.createElement(CommitEditor, { initial: editing, onSave: saveCommit, onClose: () => setEditing(null) })));
+}
+const BUILD_STEPS = ["Checking commitments", "Protecting sleep", "Finding focus periods", "Scheduling personal growth", "Adding realistic breaks"];
+function Building() {
+    const { composer: c } = useApp();
+    return (React.createElement("div", { className: "df-page" },
+        React.createElement("div", { className: "sec build", role: "status", "aria-live": "polite" },
+            React.createElement("h1", { className: "df-h1" }, "Building your day\u2026"),
+            React.createElement("p", { className: "lead" }, "Working from your commitments, sleep and goals."),
+            React.createElement("ul", null, BUILD_STEPS.map((s, i) => (React.createElement("li", { key: s, className: i < c.step ? "on" : i === c.step ? "cur" : "" },
+                React.createElement("span", { className: "dot" }, i < c.step && React.createElement(Check, { size: 14, strokeWidth: 3, "aria-hidden": "true" })),
+                s)))))));
+}
+function BuildError() {
+    const { composer: c, setComposer, runBuild } = useApp();
+    return (React.createElement("div", { className: "df-page" },
+        React.createElement(Empty, { icon: AlertTriangle, title: "I couldn't build your day", body: `Something went wrong while planning. ${c.error || ""} Your inputs are still here.` },
+            React.createElement("div", { className: "row", style: { justifyContent: "center" } },
+                React.createElement(Btn, { variant: "primary", icon: RefreshCw, onClick: () => c.lastInput && runBuild(c.lastInput) }, "Try again"),
+                React.createElement(Btn, { onClick: () => setComposer((x) => ({ ...x, view: "form" })) }, "Back to inputs")))));
+}
+function InfoCard({ icon: Icon, title, children }) {
+    return (React.createElement("section", { className: "sec" },
+        React.createElement("div", { className: "sec-head", style: { marginBottom: 8 } },
+            React.createElement("h2", { className: "df-h3 row", style: { gap: 8 } },
+                React.createElement(Icon, { size: 18, color: "var(--accent)", "aria-hidden": "true" }),
+                title)),
+        children));
+}
+function PlanResult() {
+    const { state, update, setComposer, runBuild, now, todayKey, fmt, toast, go, confirm } = useApp();
+    const { plan, input } = state.draft;
+    const [edit, setEdit] = useState(false);
+    const [editing, setEditing] = useState(null);
+    const whenLabel = plan.date === todayKey ? "today" : plan.date === addDays(todayKey, 1) ? "tomorrow" : longDate(plan.date);
+    const setItems = (fn) => update((s) => ({ ...s, draft: { ...s.draft, plan: { ...s.draft.plan, items: fn(s.draft.plan.items) } } }));
+    const saveItem = (it) => { setItems((items) => (items.some((x) => x.id === it.id) ? items.map((x) => (x.id === it.id ? it : x)) : [...items, it])); setEditing(null); };
+    const remove = (it) => confirm({ title: `Remove "${it.title}"?`, message: "It will be taken out of this plan. You can re-add it with Add item.", confirmLabel: "Remove", danger: true, onConfirm: () => setItems((items) => items.filter((x) => x.id !== it.id)) });
+    const accept = () => {
+        const go2 = () => {
+            update((s) => ({ ...s, draft: null, plans: { ...s.plans, [s.draft.plan.date]: { ...s.draft.plan, accepted: true } } }));
+            setComposer((c) => ({ ...c, view: "form", text: "", commitments: [], energy: "normal", energyTouched: false, wake: null, bed: null }));
+            toast(`Plan saved for ${plan.date === todayKey ? "today" : weekdayShort(plan.date)}`);
+            go("today");
+        };
+        if (state.plans[plan.date])
+            confirm({ title: "Replace your existing plan?", message: `You already have a plan for ${longDate(plan.date)}. Replacing it clears its progress.`, confirmLabel: "Replace plan", danger: true, onConfirm: go2 });
+        else
+            go2();
+    };
+    return (React.createElement("div", { className: "df-page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" },
+                    "Your plan for ",
+                    whenLabel),
+                React.createElement("p", { className: "lead" }, longDate(plan.date)))),
+        React.createElement("div", { className: "row", style: { marginBottom: 6 } },
+            React.createElement("span", { className: "pill" }, MODE_LABEL[plan.mode]),
+            React.createElement("span", { className: "pill" },
+                React.createElement(Moon, { size: 15, "aria-hidden": "true" }),
+                fmtDur(plan.sleepMin),
+                " sleep"),
+            React.createElement("span", { className: "pill" },
+                React.createElement(Clock, { size: 15, "aria-hidden": "true" }),
+                fmt(plan.wake),
+                " to ",
+                fmt(plan.bed))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("p", { className: "muted small" }, "Main objective"),
+            React.createElement("p", { className: "objective" }, plan.objective),
+            React.createElement("div", { style: { marginTop: 18 } },
+                React.createElement(DayStrip, { plan: plan, now: now, isToday: false }))),
+        plan.warnings.length > 0 && (React.createElement("section", { className: "sec warn", role: "alert" },
+            React.createElement("h2", { className: "df-h3 row", style: { gap: 8, marginBottom: 8 } },
+                React.createElement(AlertTriangle, { size: 18, color: "var(--accent)", "aria-hidden": "true" }),
+                "Worth a look"),
+            React.createElement("ul", { className: "list" }, plan.warnings.map((w, i) => React.createElement("li", { key: i }, w))))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("details", null,
+                React.createElement("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "How I built this"),
+                React.createElement("ul", { className: "list", style: { marginTop: 12 } }, plan.notes.map((n, i) => React.createElement("li", { key: i }, n))),
+                React.createElement("p", { className: "hint" }, "Built by the local rules engine on this device. No AI model is connected yet."))),
+        React.createElement("div", { className: "sec-head", style: { margin: "30px 0 14px" } },
+            React.createElement("h2", { className: "df-h2" }, "Timeline"),
+            edit && React.createElement(Btn, { size: "sm", icon: Plus, onClick: () => setEditing({ id: uid(), title: "", category: "growth", start: 600, end: 660, note: "", status: "pending", isNew: true }) }, "Add item")),
+        React.createElement(Timeline, { items: plan.items, mode: edit ? "edit" : "view", now: now, isToday: false, onEdit: setEditing, onDelete: remove }),
+        React.createElement(InfoCard, { icon: Target, title: "Top 3 priorities" },
+            React.createElement("ol", { className: "list" }, plan.priorities.map((p, i) => React.createElement("li", { key: i }, p)))),
+        React.createElement(InfoCard, { icon: TrendingUp, title: "Forex task" },
+            React.createElement("p", { style: { fontWeight: 600 } }, plan.forexTask.task),
+            React.createElement("p", { className: "muted small", style: { marginTop: 6 } }, plan.forexTask.detail)),
+        React.createElement(InfoCard, { icon: BookOpen, title: "Reading" },
+            React.createElement("p", { style: { fontWeight: 600 } },
+                plan.readingTask.title,
+                plan.readingTask.minutes ? `, ${fmtDur(plan.readingTask.minutes)}` : ""),
+            React.createElement("p", { className: "muted small", style: { marginTop: 6 } }, plan.readingTask.detail)),
+        React.createElement(InfoCard, { icon: Dumbbell, title: "Fitness" },
+            React.createElement("p", { style: { fontWeight: 600 } },
+                plan.fitnessTask.title,
+                plan.fitnessTask.minutes ? `, ${fmtDur(plan.fitnessTask.minutes)}` : ""),
+            React.createElement("p", { className: "muted small", style: { marginTop: 6 } }, plan.fitnessTask.detail)),
+        React.createElement(InfoCard, { icon: Smartphone, title: "Phone rule" },
+            React.createElement("p", null, plan.phoneRule)),
+        React.createElement(InfoCard, { icon: Moon, title: "Night review" },
+            React.createElement("p", { className: "muted small", style: { marginBottom: 8 } }, "Before sleeping, answer these in your Journal:"),
+            React.createElement("ol", { className: "list" }, plan.nightReview.map((q) => React.createElement("li", { key: q }, q)))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("p", { className: "muted small" }, "Tomorrow's rule"),
+            React.createElement("p", { className: "quote", style: { marginTop: 6 } }, plan.rule)),
+        React.createElement("div", { className: "sticky-cta" },
+            React.createElement("div", { className: "row", style: { flexWrap: "nowrap", background: "var(--bg)", padding: 4, borderRadius: 18 } },
+                React.createElement(Btn, { variant: "primary", size: "xl", style: { flex: 2 }, icon: Check, onClick: accept }, "Accept plan"),
+                React.createElement(Btn, { size: "xl", style: { flex: 1, padding: "0 12px" }, icon: Pencil, onClick: () => setEdit(!edit), "aria-pressed": edit }, edit ? "Done" : "Edit"),
+                React.createElement(Btn, { size: "xl", style: { flex: 1, padding: "0 12px" }, icon: RefreshCw, onClick: () => runBuild({ ...input, variant: (input.variant || 0) + 1 }), "aria-label": "Regenerate plan", title: "Regenerate with a different arrangement" },
+                    React.createElement("span", { className: "sr" }, "Regenerate"))),
+            React.createElement("div", { style: { textAlign: "center", marginTop: 4 } },
+                React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setComposer((c) => ({ ...c, view: "form" })) }, "Back to inputs"))),
+        editing && React.createElement(ItemEditor, { item: editing, isNew: !!editing.isNew, onSave: (it) => { const { isNew, ...clean } = it; saveItem({ ...clean, id: clean.id || uid(), fixed: false, estimate: false }); }, onClose: () => setEditing(null) })));
+}
+function PlanScreen() {
+    const { state, composer: c } = useApp();
+    if (c.view === "building")
+        return React.createElement(Building, null);
+    if (c.view === "error")
+        return React.createElement(BuildError, null);
+    if (c.view === "result" && state.draft)
+        return React.createElement(PlanResult, null);
+    return React.createElement(PlanForm, null);
+}
+/* ================================= GOALS ================================ */
+const weekRange = (todayKey) => { const dow = (parseKey(todayKey).getDay() + 6) % 7; const mon = addDays(todayKey, -dow); return [mon, addDays(mon, 6)]; };
+const sumLog = (g, from, to) => g.log.filter((l) => (!from || l.date >= from) && (!to || l.date <= to)).reduce((a, l) => a + l.amount, 0);
+const round1 = (n) => Math.round(n * 10) / 10;
+function GoalModal({ goal, todayKey, onSave, onClose }) {
+    const [v, setV] = useState({
+        title: goal?.title || "", why: goal?.why || "", targetDate: goal?.targetDate || addDays(todayKey, 90),
+        weeklyTarget: String(goal?.weeklyTarget ?? ""), unit: goal?.unit || "", total: String(goal?.total ?? ""),
+        dailyTarget: goal?.dailyTarget || "", habits: (goal?.habits || []).join("\n"),
+    });
+    const err = !v.title.trim() ? "Name your goal." : !(Number(v.total) > 0) ? "Set a total target above zero." : !v.unit.trim() ? "Add a unit, such as hours or trades." : "";
+    const save = () => onSave({
+        id: goal?.id || uid(), log: goal?.log || [], sample: goal?.sample, title: v.title.trim(), why: v.why.trim(), targetDate: v.targetDate,
+        weeklyTarget: Number(v.weeklyTarget) || 0, unit: v.unit.trim(), total: Number(v.total), dailyTarget: v.dailyTarget.trim(),
+        habits: v.habits.split("\n").map((h) => h.trim()).filter(Boolean),
+    });
+    return (React.createElement(Modal, { title: goal ? "Edit goal" : "New goal", onClose: onClose, footer: React.createElement(React.Fragment, null,
+            React.createElement(Btn, { variant: "ghost", onClick: onClose }, "Cancel"),
+            React.createElement(Btn, { variant: "primary", disabled: !!err, onClick: save }, goal ? "Save changes" : "Create goal")) },
+        React.createElement(Field, { label: "Goal" },
+            React.createElement("input", { className: "inp", placeholder: "Become consistently profitable in forex", value: v.title, onChange: (e) => setV({ ...v, title: e.target.value }) })),
+        React.createElement(Field, { label: "Why it matters" },
+            React.createElement("textarea", { className: "inp", value: v.why, onChange: (e) => setV({ ...v, why: e.target.value }) })),
+        React.createElement("div", { className: "grid2" },
+            React.createElement(Field, { label: "Total target" },
+                React.createElement("input", { className: "inp", type: "number", min: "1", inputMode: "decimal", placeholder: "100", value: v.total, onChange: (e) => setV({ ...v, total: e.target.value }) })),
+            React.createElement(Field, { label: "Unit" },
+                React.createElement("input", { className: "inp", placeholder: "backtested trades", value: v.unit, onChange: (e) => setV({ ...v, unit: e.target.value }) })),
+            React.createElement(Field, { label: "Weekly target" },
+                React.createElement("input", { className: "inp", type: "number", min: "0", inputMode: "decimal", placeholder: "20", value: v.weeklyTarget, onChange: (e) => setV({ ...v, weeklyTarget: e.target.value }) })),
+            React.createElement(Field, { label: "Target date" },
+                React.createElement("input", { className: "inp", type: "date", value: v.targetDate, onChange: (e) => setV({ ...v, targetDate: e.target.value }) }))),
+        React.createElement(Field, { label: "Daily target" },
+            React.createElement("input", { className: "inp", placeholder: "30\u201360 min", value: v.dailyTarget, onChange: (e) => setV({ ...v, dailyTarget: e.target.value }) })),
+        React.createElement(Field, { label: "Daily habits", hint: "One per line." },
+            React.createElement("textarea", { className: "inp", value: v.habits, onChange: (e) => setV({ ...v, habits: e.target.value }) })),
+        err && React.createElement("p", { className: "err", role: "alert" }, err)));
+}
+function LogModal({ goal, todayKey, onSave, onRemove, onClose }) {
+    const [amount, setAmount] = useState("");
+    const [date, setDate] = useState(todayKey);
+    const ok = Number(amount) > 0;
+    const recent = goal.log.slice().sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5);
+    return (React.createElement(Modal, { title: `Log progress`, onClose: onClose, footer: React.createElement(React.Fragment, null,
+            React.createElement(Btn, { variant: "ghost", onClick: onClose }, "Close"),
+            React.createElement(Btn, { variant: "primary", disabled: !ok, onClick: () => onSave({ date, amount: Number(amount) }) }, "Add progress")) },
+        React.createElement("p", { className: "muted" }, goal.title),
+        React.createElement("div", { className: "grid2" },
+            React.createElement(Field, { label: `Amount (${goal.unit})` },
+                React.createElement("input", { className: "inp", type: "number", min: "0", step: "any", inputMode: "decimal", value: amount, onChange: (e) => setAmount(e.target.value) })),
+            React.createElement(Field, { label: "Date" },
+                React.createElement("input", { className: "inp", type: "date", max: todayKey, value: date, onChange: (e) => setDate(e.target.value) }))),
+        recent.length > 0 && (React.createElement("div", null,
+            React.createElement("p", { className: "df-h3", style: { marginBottom: 8 } }, "Recent entries"),
+            recent.map((l, i) => (React.createElement("div", { className: "row", key: i, style: { justifyContent: "space-between", padding: "4px 0" } },
+                React.createElement("span", { className: "small num" },
+                    shortDate(l.date),
+                    ": ",
+                    l.amount,
+                    " ",
+                    goal.unit),
+                React.createElement(IconBtn, { icon: Trash2, label: `Remove entry from ${shortDate(l.date)}`, onClick: () => onRemove(l) }))))))));
+}
+function GoalsScreen() {
+    const { state, update, todayKey, toast, confirm } = useApp();
+    const [editing, setEditing] = useState(null);
+    const [logging, setLogging] = useState(null);
+    const [from, to] = weekRange(todayKey);
+    const upsert = (g) => { update((s) => ({ ...s, goals: s.goals.some((x) => x.id === g.id) ? s.goals.map((x) => (x.id === g.id ? g : x)) : [...s.goals, g] })); setEditing(null); toast("Goal saved"); };
+    const addLog = (g, entry) => { update((s) => ({ ...s, goals: s.goals.map((x) => (x.id === g.id ? { ...x, log: [...x.log, entry] } : x)) })); setLogging(null); toast("Progress logged"); };
+    const rmLog = (g, entry) => {
+        update((s) => ({ ...s, goals: s.goals.map((x) => (x.id === g.id ? { ...x, log: x.log.filter((l) => l !== entry && !(l.date === entry.date && l.amount === entry.amount)) } : x)) }));
+        setLogging(null);
+    };
+    const del = (g) => confirm({ title: `Delete "${g.title}"?`, message: "The goal and all of its logged progress will be removed. This cannot be undone.", confirmLabel: "Delete goal", danger: true, onConfirm: () => { update((s) => ({ ...s, goals: s.goals.filter((x) => x.id !== g.id) })); toast("Goal deleted"); } });
+    const live = logging ? state.goals.find((g) => g.id === logging.id) : null;
+    return (React.createElement("div", { className: "df-page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" }, "Goals"),
+                React.createElement("p", { className: "lead" }, "What your days are building toward.")),
+            state.goals.length > 0 && React.createElement(Btn, { variant: "primary", icon: Plus, onClick: () => setEditing({}) }, "New goal")),
+        state.goals.length === 0 && (React.createElement(Empty, { icon: Target, title: "No goals yet", body: "A goal turns daily effort into something you can measure. Start with the one that matters most." },
+            React.createElement(Btn, { variant: "primary", icon: Plus, onClick: () => setEditing({}) }, "Create your first goal"))),
+        state.goals.map((g) => {
+            const done = round1(sumLog(g)), wk = round1(sumLog(g, from, to));
+            const pct = (done / g.total) * 100;
+            const left = Math.ceil((parseKey(g.targetDate) - parseKey(todayKey)) / 86400000);
+            return (React.createElement("section", { className: "sec", key: g.id, "aria-labelledby": `g-${g.id}` },
+                React.createElement("div", { className: "sec-head", style: { alignItems: "flex-start" } },
+                    React.createElement("div", null,
+                        React.createElement("h2", { className: "df-h2", id: `g-${g.id}` }, g.title),
+                        g.why && React.createElement("p", { className: "muted small", style: { marginTop: 4 } }, g.why)),
+                    React.createElement("div", { className: "row", style: { gap: 0, flexWrap: "nowrap" } },
+                        React.createElement(IconBtn, { icon: Pencil, label: `Edit ${g.title}`, onClick: () => setEditing(g) }),
+                        React.createElement(IconBtn, { icon: Trash2, label: `Delete ${g.title}`, onClick: () => del(g) }))),
+                React.createElement("div", { className: "row", style: { justifyContent: "space-between", marginBottom: 8 } },
+                    React.createElement("span", { className: "num" },
+                        React.createElement("b", { style: { fontSize: 20 } }, done),
+                        " ",
+                        React.createElement("span", { className: "muted" },
+                            "/ ",
+                            g.total,
+                            " ",
+                            g.unit)),
+                    React.createElement("span", { className: "muted num" },
+                        Math.min(100, Math.round(pct)),
+                        "%")),
+                React.createElement(PBar, { value: pct, label: `${g.title} progress` }),
+                React.createElement("div", { className: "stats", style: { marginTop: 16, gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))" } },
+                    g.weeklyTarget > 0 && React.createElement("div", { className: "stat" },
+                        React.createElement("b", { style: { fontSize: 24 } },
+                            wk,
+                            " / ",
+                            g.weeklyTarget),
+                        React.createElement("span", null, "this week")),
+                    g.dailyTarget && React.createElement("div", { className: "stat" },
+                        React.createElement("b", { style: { fontSize: 24 } }, g.dailyTarget),
+                        React.createElement("span", null, "daily target")),
+                    React.createElement("div", { className: "stat" },
+                        React.createElement("b", { style: { fontSize: 24 } }, left > 0 ? left : 0),
+                        React.createElement("span", null, left > 0 ? "days left" : "past target date"))),
+                g.habits.length > 0 && React.createElement("div", { className: "chips", style: { marginTop: 14 } }, g.habits.map((h, i) => React.createElement("span", { className: "chip static", key: i }, h))),
+                React.createElement("div", { style: { marginTop: 16 } },
+                    React.createElement(Btn, { size: "sm", variant: "primary", icon: Plus, onClick: () => setLogging(g) }, "Log progress"))));
+        }),
+        editing && React.createElement(GoalModal, { goal: editing.id ? editing : null, todayKey: todayKey, onSave: upsert, onClose: () => setEditing(null) }),
+        live && React.createElement(LogModal, { goal: live, todayKey: todayKey, onSave: (e) => addLog(live, e), onRemove: (e) => rmLog(live, e), onClose: () => setLogging(null) })));
+}
+/* ================================ PROGRESS ============================== */
+function ProgressScreen() {
+    const { state, todayKey, behavior, loadSample, go } = useApp();
+    const [range, setRange] = useState("week");
+    const n = range === "week" ? 7 : 30;
+    const rows = useMemo(() => Array.from({ length: n }, (_, i) => {
+        const k = addDays(todayKey, -(n - 1 - i));
+        const p = state.plans[k] && state.plans[k].accepted ? state.plans[k] : null;
+        return { k, p, pct: p ? planStats(p).pct : null };
+    }), [n, todayKey, state.plans]);
+    const withPlan = rows.filter((r) => r.p);
+    const streak = computeStreak(state.plans, todayKey);
+    const allDays = Object.keys(state.plans).length;
+    const avg = withPlan.length ? Math.round(withPlan.reduce((a, r) => a + r.pct, 0) / withPlan.length) : null;
+    const doneItems = withPlan.flatMap((r) => r.p.items.filter((i) => i.status === "done"));
+    const forexN = doneItems.filter((i) => i.category === "forex").length;
+    const readH = round1(doneItems.filter((i) => i.category === "reading").reduce((a, i) => a + (i.end - i.start), 0) / 60);
+    const exN = doneItems.filter((i) => i.category === "fitness").length;
+    const sleepDiffs = Object.values(state.journal)
+        .filter((j) => j.actualBed && j.date >= rows[0].k && j.date <= todayKey && state.plans[addDays(j.date, -1)] && state.plans[addDays(j.date, -1)].accepted)
+        .map((j) => Math.abs(signedDiff(toMin(j.actualBed), state.plans[addDays(j.date, -1)].bed % DAY)));
+    const sleepPct = sleepDiffs.length ? Math.round((sleepDiffs.filter((d) => d <= 30).length / sleepDiffs.length) * 100) : null;
+    const catMin = ["forex", "reading", "fitness", "school", "growth", "business", "social"].map((c) => ({ c, m: doneItems.filter((i) => i.category === c).reduce((a, i) => a + (i.end - i.start), 0) })).filter((x) => x.m > 0);
+    const maxM = Math.max(1, ...catMin.map((x) => x.m));
+    if (allDays === 0) {
+        return (React.createElement("div", { className: "df-page" },
+            React.createElement("div", { className: "page-head" },
+                React.createElement("div", null,
+                    React.createElement("h1", { className: "df-h1" }, "Progress"),
+                    React.createElement("p", { className: "lead" }, "Your consistency, in numbers that matter."))),
+            React.createElement(Empty, { icon: BarChart3, title: "Nothing to measure yet", body: "Accept a plan and check items off. Your completion, streak and habits show up here. Or preview this screen with sample data you can remove later." },
+                React.createElement("div", { className: "row", style: { justifyContent: "center" } },
+                    React.createElement(Btn, { variant: "primary", onClick: () => go("plan") }, "Plan a day"),
+                    React.createElement(Btn, { onClick: loadSample }, "Preview with sample data")))));
+    }
+    return (React.createElement("div", { className: "df-page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" }, "Progress"),
+                React.createElement("p", { className: "lead" }, "Your consistency, in numbers that matter."))),
+        React.createElement(Seg, { label: "Range", value: range, onChange: setRange, options: [{ value: "week", label: "Last 7 days" }, { value: "month", label: "Last 30 days" }] }),
+        React.createElement("div", { className: "stats", style: { marginTop: 16 } },
+            React.createElement("div", { className: "stat" },
+                React.createElement("b", { className: "num" }, avg === null ? "–" : `${avg}%`),
+                React.createElement("span", null, "Daily completion")),
+            React.createElement("div", { className: "stat" },
+                React.createElement("b", { className: "num" }, streak),
+                React.createElement("span", null, "Day streak")),
+            React.createElement("div", { className: "stat" },
+                React.createElement("b", { className: "num" }, forexN),
+                React.createElement("span", null, "Forex sessions")),
+            React.createElement("div", { className: "stat" },
+                React.createElement("b", { className: "num" }, readH),
+                React.createElement("span", null, "Hours read")),
+            React.createElement("div", { className: "stat" },
+                React.createElement("b", { className: "num" }, exN),
+                React.createElement("span", null, "Exercise sessions")),
+            React.createElement("div", { className: "stat" },
+                React.createElement("b", { className: "num" }, sleepPct === null ? "–" : `${sleepPct}%`),
+                React.createElement("span", null, "Sleep consistency"))),
+        sleepPct === null && React.createElement("p", { className: "hint" }, "Log last night's bedtime in your Journal to see sleep consistency."),
+        React.createElement("section", { className: "sec", "aria-labelledby": "comp-h" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2", id: "comp-h" }, "Daily completion")),
+            React.createElement("div", { className: "bars", role: "img", "aria-label": `Completion by day. ${withPlan.length} planned days, average ${avg ?? 0} percent.` }, rows.map((r, i) => (React.createElement("div", { className: "bar-col", key: r.k, title: r.pct === null ? `${shortDate(r.k)}: no plan` : `${shortDate(r.k)}: ${r.pct}%` },
+                React.createElement("div", { className: `bar ${r.pct === null ? "none" : ""}`, style: { height: r.pct === null ? 3 : `${Math.max(2, r.pct) * 0.82}%` } }),
+                React.createElement("span", { className: "bar-lbl" }, range === "week" ? weekdayShort(r.k).slice(0, 3) : i % 5 === 0 ? parseKey(r.k).getDate() : "\u00a0")))))),
+        catMin.length > 0 && (React.createElement("section", { className: "sec", "aria-labelledby": "time-h" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2", id: "time-h" }, "Where your time went")),
+            catMin.map((x) => (React.createElement("div", { className: "hbar", key: x.c, style: { "--c": CATS[x.c].color } },
+                React.createElement("span", { className: "row", style: { gap: 8, flexWrap: "nowrap" } },
+                    React.createElement(CatIcon, { cat: x.c, size: 14 }),
+                    CATS[x.c].label),
+                React.createElement(PBar, { value: (x.m / maxM) * 100, label: `${CATS[x.c].label} time` }),
+                React.createElement("span", { className: "t num" },
+                    round1(x.m / 60),
+                    " h")))))),
+        React.createElement("section", { className: "sec", "aria-labelledby": "learn-h" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2", id: "learn-h" }, "What your planner has learned")),
+            behavior.insights.length > 0 ? behavior.insights.map((i) => (React.createElement("div", { className: "insight", key: i.id },
+                React.createElement("p", { className: "df-h3" }, i.title),
+                React.createElement("p", { className: "muted small", style: { marginTop: 4 } }, i.detail)))) : (React.createElement("div", null,
+                React.createElement("p", { className: "muted" }, "No patterns yet, and I will not guess. I need real behavior first: at least 3 forex sessions in two different parts of the day, 3 reading sessions of 90+ minutes, or 3 logged bedtimes."),
+                React.createElement("p", { className: "hint" },
+                    "So far: ",
+                    behavior.pastDays,
+                    " past planned ",
+                    behavior.pastDays === 1 ? "day" : "days",
+                    ", ",
+                    behavior.forexSamples,
+                    " forex sessions, ",
+                    behavior.sleepSamples,
+                    " logged bedtimes."))))));
+}
+/* ================================ JOURNAL =============================== */
+const blankJournal = (date) => ({ date, accomplished: "", unfinished: "", wentWrong: "", learned: "", energy: "", rules: "", improve: "", actualBed: "", summary: null });
+function JournalScreen() {
+    const { state, update, todayKey, toast } = useApp();
+    const [date, setDate] = useState(todayKey);
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const e = state.journal[date] || blankJournal(date);
+    const plan = state.plans[date];
+    const set = (p) => update((s) => ({ ...s, journal: { ...s.journal, [date]: { ...(s.journal[date] || blankJournal(date)), ...p } } }));
+    const hasText = [e.accomplished, e.unfinished, e.wentWrong, e.learned, e.improve].some((t) => t.trim());
+    const doneTitles = plan ? plan.items.filter((i) => i.status === "done" && countable(i)).map((i) => i.title) : [];
+    const recent = Object.values(state.journal).filter((j) => j.date !== date && (j.accomplished || j.learned || j.improve)).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 6);
+    const summarize = async () => {
+        setBusy(true);
+        setErr("");
+        try {
+            const s = await aiService.summarizeJournal(e, plan);
+            set({ summary: s });
+        }
+        catch (x) {
+            setErr("The summary failed. Your answers are saved. Try again.");
+        }
+        setBusy(false);
+    };
+    const q = (label, field) => (React.createElement(Field, { label: label },
+        React.createElement("textarea", { className: "inp", value: e[field], onChange: (ev) => set({ [field]: ev.target.value, summary: null }) })));
+    return (React.createElement("div", { className: "df-page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" }, "Journal"),
+                React.createElement("p", { className: "lead" }, "Two minutes of honesty makes tomorrow better."))),
+        React.createElement("div", { className: "row", style: { justifyContent: "space-between" } },
+            React.createElement(IconBtn, { icon: ChevronLeft, label: "Previous day", disabled: date <= addDays(todayKey, -30), onClick: () => { setDate(addDays(date, -1)); setErr(""); } }),
+            React.createElement("h2", { className: "df-h3", "aria-live": "polite" }, date === todayKey ? "Today" : longDate(date)),
+            React.createElement(IconBtn, { icon: ChevronRight, label: "Next day", disabled: date >= todayKey, onClick: () => { setDate(addDays(date, 1)); setErr(""); } })),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 20 } },
+                React.createElement("div", null,
+                    q("What did I accomplish today?", "accomplished"),
+                    doneTitles.length > 0 && !e.accomplished.trim() && (React.createElement("div", { style: { marginTop: 8 } },
+                        React.createElement(Btn, { size: "sm", icon: ListChecks, onClick: () => set({ accomplished: doneTitles.join(", ") + "." }) }, "Fill in what I completed")))),
+                q("What didn't I finish?", "unfinished"),
+                q("What went wrong?", "wentWrong"),
+                q("What did I learn?", "learned"),
+                React.createElement(Field, { label: "How was my energy?", group: true },
+                    React.createElement(Seg, { label: "Energy", value: e.energy, onChange: (v) => set({ energy: v, summary: null }), options: [{ value: "Low", label: "Low" }, { value: "Normal", label: "Normal" }, { value: "High", label: "High" }] })),
+                React.createElement("div", null,
+                    React.createElement("p", { className: "lbl", style: { fontSize: 14, fontWeight: 600, marginBottom: 7 } }, "Did I follow my trading rules?"),
+                    React.createElement("div", { className: "chips", role: "radiogroup", "aria-label": "Followed trading rules" }, ["Yes", "Partly", "No", "Did not trade"].map((o) => (React.createElement("button", { key: o, type: "button", role: "radio", "aria-checked": e.rules === o, "aria-pressed": e.rules === o, className: "chip", onClick: () => set({ rules: o, summary: null }) }, o))))),
+                q("What should I improve tomorrow?", "improve"),
+                React.createElement(Field, { label: "What time did you go to bed last night? (optional)", hint: "Used for your sleep consistency and to spot a late-sleep pattern." },
+                    React.createElement("input", { className: "inp", type: "time", value: e.actualBed, onChange: (ev) => set({ actualBed: ev.target.value }) }))),
+            React.createElement("p", { className: "hint", style: { marginTop: 16 } }, "Answers save automatically on this device.")),
+        React.createElement("div", { className: "sticky-cta" },
+            React.createElement(Btn, { variant: "primary", size: "xl", className: "block", icon: Wand2, disabled: !hasText || busy, onClick: summarize }, busy ? "Summarizing…" : "Summarize my day"),
+            !hasText && React.createElement("p", { className: "hint", style: { textAlign: "center" } }, "Write at least one answer first.")),
+        err && React.createElement("p", { className: "err", role: "alert" }, err),
+        e.summary && (React.createElement("section", { className: "sec warn", "aria-live": "polite" },
+            React.createElement("p", { className: "muted small" }, "Today's lesson"),
+            React.createElement("p", { className: "quote", style: { margin: "6px 0 18px" } }, e.summary.lesson),
+            React.createElement("p", { className: "muted small" }, "Tomorrow's improvement"),
+            React.createElement("p", { className: "quote", style: { marginTop: 6 } }, e.summary.improvement),
+            React.createElement("p", { className: "hint", style: { marginTop: 14 } }, "Summarized on this device from your own answers. No AI model is connected yet."))),
+        recent.length > 0 && (React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Earlier entries")),
+            recent.map((j) => (React.createElement("button", { key: j.date, type: "button", className: "commit", style: { width: "100%", textAlign: "left", marginBottom: 8 }, onClick: () => { setDate(j.date); setErr(""); window.scrollTo && window.scrollTo({ top: 0 }); } },
+                React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                    React.createElement("p", { style: { fontWeight: 600 } }, longDate(j.date)),
+                    React.createElement("p", { className: "muted small", style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, j.accomplished || j.learned || j.improve)),
+                React.createElement(ChevronRight, { size: 18, className: "muted", "aria-hidden": "true" }))))))));
+}
+/* =============================== SETTINGS =============================== */
+function SettingsScreen() {
+    const { state, update, confirm, storageOk, storageKinds, persisted, openBackup, loadSample, removeSample, resetAll, hasSample } = useApp();
+    const { user, prefs } = state;
+    const setUser = (p) => update((s) => ({ ...s, user: { ...s.user, ...p } }));
+    const setPrefs = (p) => update((s) => ({ ...s, prefs: { ...s.prefs, ...p } }));
+    return (React.createElement("div", { className: "df-page" },
+        React.createElement("div", { className: "page-head" },
+            React.createElement("div", null,
+                React.createElement("h1", { className: "df-h1" }, "Settings"),
+                React.createElement("p", { className: "lead" }, "Changes apply to your next plan."))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Profile")),
+            React.createElement(Field, { label: "Name" },
+                React.createElement("input", { className: "inp", value: user.name, maxLength: 30, onChange: (e) => setUser({ name: e.target.value }) }))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Sleep")),
+            React.createElement("div", { className: "grid2" },
+                React.createElement(Field, { label: "Wake-up time" },
+                    React.createElement("input", { className: "inp", type: "time", value: user.wake, onChange: (e) => setUser({ wake: e.target.value }) })),
+                React.createElement(Field, { label: "Preferred bedtime" },
+                    React.createElement("input", { className: "inp", type: "time", value: user.bed, onChange: (e) => setUser({ bed: e.target.value }) })))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Daily targets")),
+            React.createElement("div", { className: "grid2" },
+                React.createElement(NumField, { label: "Forex", value: prefs.forexMin, min: 0, max: 480, onChange: (v) => setPrefs({ forexMin: v }) }),
+                React.createElement(NumField, { label: "Reading", value: prefs.readingMin, min: 0, max: 480, onChange: (v) => setPrefs({ readingMin: v }) }),
+                React.createElement(NumField, { label: "Exercise", value: prefs.exerciseMin, min: 0, max: 240, onChange: (v) => setPrefs({ exerciseMin: v }) }),
+                React.createElement(NumField, { label: "Entertainment limit", value: prefs.entertainmentLimit, min: 0, max: 480, onChange: (v) => setPrefs({ entertainmentLimit: v }), hint: "A cap, not a goal. Set 0 to leave it out." })),
+            React.createElement("div", { style: { marginTop: 14 } },
+                React.createElement(Field, { label: "Main forex setup", hint: "Optional. Used to make your forex tasks specific, such as the name of your strategy." },
+                    React.createElement("input", { className: "inp", placeholder: "e.g. GBP/USD breakout", value: prefs.forexSetup, onChange: (e) => setPrefs({ forexSetup: e.target.value }) })))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Display")),
+            React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 16 } },
+                React.createElement(Field, { label: "Theme", group: true },
+                    React.createElement(Seg, { label: "Theme", value: prefs.theme, onChange: (v) => setPrefs({ theme: v }), options: [{ value: "dark", label: "Dark", icon: Moon }, { value: "light", label: "Light", icon: Sun }] })),
+                React.createElement(Field, { label: "Time format", group: true },
+                    React.createElement(Seg, { label: "Time format", value: prefs.timeFormat, onChange: (v) => setPrefs({ timeFormat: v }), options: [{ value: "12h", label: "12-hour" }, { value: "24h", label: "24-hour" }] })))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Notifications")),
+            React.createElement("div", { className: "toggle" },
+                React.createElement("div", null,
+                    React.createElement("p", { style: { fontWeight: 600 } }, "Daily reminders"),
+                    React.createElement("p", { className: "hint", style: { marginTop: 2 } }, "Not connected yet. Reminders need a notification service, which this version does not have.")),
+                React.createElement("button", { type: "button", role: "switch", "aria-checked": "false", "aria-label": "Daily reminders (not available yet)", className: "sw", disabled: true }))),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Planner engine")),
+            React.createElement("p", null,
+                React.createElement("b", null, aiService.provider.label)),
+            React.createElement("p", { className: "muted small", style: { marginTop: 4 } },
+                "No AI API is connected. Plans and journal summaries come from deterministic rules on this device. To connect a real model, replace the functions in ",
+                React.createElement("code", null, "aiService"),
+                " in the source. The inputs and outputs stay the same."),
+            React.createElement("p", { className: "muted small", style: { marginTop: 10 } },
+                "Saving: ",
+                storageOk ? `on (${storageKinds.map(kindLabel).join(" + ")})${persisted ? ", protected from automatic cleanup" : ""}` : "off in this view. Use Back up so nothing is lost.")),
+        React.createElement("section", { className: "sec" },
+            React.createElement("div", { className: "sec-head" },
+                React.createElement("h2", { className: "df-h2" }, "Data")),
+            React.createElement("div", { className: "row" },
+                React.createElement(Btn, { variant: "primary", onClick: openBackup }, "Back up or restore"),
+                React.createElement(Btn, { onClick: loadSample }, "Add sample data"),
+                hasSample && React.createElement(Btn, { onClick: removeSample }, "Remove sample data"),
+                React.createElement(Btn, { variant: "danger", icon: Trash2, onClick: () => confirm({ title: "Reset all data?", message: "This deletes your plans, goals, journal and settings, and restarts setup. It cannot be undone.", confirmLabel: "Reset everything", danger: true, onConfirm: resetAll }) }, "Reset data")),
+            React.createElement("p", { className: "hint" }, "Sample data adds 14 past days so you can preview Progress and personalization. It is clearly labeled and removable."))));
+}
+/* ============================ STORAGE LAYER ============================ *
+ * Tries every place data can live and writes to all that work:
+ *  1. Claude artifact storage (window.storage)
+ *  2. Browser localStorage (works when DayForge is opened as a normal web page)
+ * Plus a manual backup you can copy anywhere, so data is never trapped.
+ * ------------------------------------------------------------------------ */
+const adapters = {
+    artifact: {
+        async get(k) { const r = await window.storage.get(k, false); return r && r.value ? r.value : null; },
+        async set(k, v) { const r = await window.storage.set(k, v, false); if (!r)
+            throw new Error("save failed"); },
+    },
+    local: {
+        async get(k) { return window.localStorage.getItem(k); },
+        async set(k, v) { window.localStorage.setItem(k, v); },
+    },
+    idb: {
+        get(k) {
+            return new Promise((res, rej) => {
+                const r = indexedDB.open("dayforge", 1);
+                r.onupgradeneeded = () => r.result.createObjectStore("kv");
+                r.onerror = () => rej(r.error);
+                r.onsuccess = () => {
+                    try {
+                        const g = r.result.transaction("kv", "readonly").objectStore("kv").get(k);
+                        g.onsuccess = () => res(g.result == null ? null : g.result);
+                        g.onerror = () => rej(g.error);
+                    }
+                    catch (e) {
+                        rej(e);
+                    }
+                };
+            });
+        },
+        set(k, v) {
+            return new Promise((res, rej) => {
+                const r = indexedDB.open("dayforge", 1);
+                r.onupgradeneeded = () => r.result.createObjectStore("kv");
+                r.onerror = () => rej(r.error);
+                r.onsuccess = () => {
+                    try {
+                        const tx = r.result.transaction("kv", "readwrite");
+                        tx.objectStore("kv").put(v, k);
+                        tx.oncomplete = () => res();
+                        tx.onerror = () => rej(tx.error);
+                    }
+                    catch (e) {
+                        rej(e);
+                    }
+                };
+            });
+        },
+    },
+};
+const kindLabel = (k) => (k === "artifact" ? "Claude storage" : k === "local" ? "this browser" : "browser database");
+async function probeAdapter(name) {
+    try {
+        if (typeof window === "undefined")
+            return false;
+        if (name === "artifact" && !window.storage)
+            return false;
+        if (name === "local" && !window.localStorage)
+            return false;
+        if (name === "idb" && !window.indexedDB)
+            return false;
+        await adapters[name].set("dayforge:probe", "1");
+        return true;
+    }
+    catch (e) {
+        return false;
+    }
+}
+function BackupModal({ state, onRestore, onBackedUp, onClose }) {
+    const { toast } = useApp();
+    const json = useMemo(() => JSON.stringify({ ...state, savedAt: Date.now() }), [state]);
+    const [paste, setPaste] = useState("");
+    const taRef = useRef(null);
+    const parsed = useMemo(() => {
+        if (!paste.trim())
+            return null;
+        try {
+            const d = JSON.parse(paste);
+            return d && d.v === 1 && d.plans && d.prefs && d.user ? { ok: true, d } : { ok: false };
+        }
+        catch (e) {
+            return { ok: false };
+        }
+    }, [paste]);
+    const copy = async () => {
+        try {
+            await navigator.clipboard.writeText(json);
+            onBackedUp();
+            toast("Backup copied. Paste it into Notes or email it to yourself.");
+        }
+        catch (e) {
+            if (taRef.current) {
+                taRef.current.focus();
+                taRef.current.select();
+            }
+            toast("Couldn't copy automatically. The text is selected, so copy it by hand.", "error");
+        }
+    };
+    const download = () => {
+        try {
+            const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `dayforge-backup-${dateKey(new Date())}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            onBackedUp();
+        }
+        catch (e) {
+            toast("Downloads aren't available here. Use Copy backup instead.", "error");
+        }
+    };
+    return (React.createElement(Modal, { title: "Back up or restore", onClose: onClose, footer: React.createElement(Btn, { variant: "primary", onClick: onClose }, "Done") },
+        React.createElement("div", null,
+            React.createElement("p", { className: "df-h3" }, "Back up"),
+            React.createElement("p", { className: "muted small", style: { margin: "4px 0 10px" } }, "Everything: plans, goals, journal and settings. Keep it somewhere safe."),
+            React.createElement("textarea", { ref: taRef, className: "inp", readOnly: true, "aria-label": "Backup data", value: json, style: { minHeight: 90, fontSize: 13 }, onFocus: (e) => e.target.select() }),
+            React.createElement("div", { className: "row", style: { marginTop: 10 } },
+                React.createElement(Btn, { size: "sm", variant: "primary", onClick: copy }, "Copy backup"),
+                React.createElement(Btn, { size: "sm", onClick: download }, "Download file"))),
+        React.createElement("div", null,
+            React.createElement("p", { className: "df-h3" }, "Restore"),
+            React.createElement("p", { className: "muted small", style: { margin: "4px 0 10px" } }, "Paste a backup you copied earlier. This replaces what is here now."),
+            React.createElement("textarea", { className: "inp", "aria-label": "Paste backup here", placeholder: "Paste backup text here", value: paste, onChange: (e) => setPaste(e.target.value), style: { minHeight: 90, fontSize: 13 } }),
+            parsed && !parsed.ok && React.createElement("p", { className: "err", role: "alert" }, "That doesn't look like a DayForge backup. Paste the full text you copied."),
+            parsed && parsed.ok && (React.createElement("div", { style: { marginTop: 10 } },
+                React.createElement("p", { className: "small" },
+                    "Found ",
+                    Object.keys(parsed.d.plans).length,
+                    " planned days, ",
+                    (parsed.d.goals || []).length,
+                    " goals and ",
+                    Object.keys(parsed.d.journal || {}).length,
+                    " journal entries."),
+                React.createElement(Btn, { size: "sm", variant: "danger", style: { marginTop: 10 }, onClick: () => onRestore(parsed.d) }, "Replace my data with this backup"))))));
+}
+/* ================================== APP ================================= */
+const initialState = () => ({
+    v: 1, onboarded: false, lastBackupAt: 0,
+    user: { name: "", wake: "06:30", bed: "22:30", goals: [], dailyGoalMin: 120 },
+    prefs: { forexMin: 150, readingMin: 120, exerciseMin: 45, entertainmentLimit: 150, forexSetup: "", timeFormat: "12h", theme: "dark", notifications: false },
+    goals: [], plans: {}, journal: {}, draft: null,
+});
+const initialComposer = () => ({ target: "tomorrow", text: "", commitments: [], goals: [], energy: "normal", energyTouched: false, wake: null, bed: null, view: "form", step: 0, error: null, lastInput: null });
+const NAV = [
+    ["today", "Today", Sun], ["plan", "Plan", CalendarDays], ["goals", "Goals", Target],
+    ["progress", "Progress", BarChart3], ["journal", "Journal", NotebookPen], ["settings", "Settings", SettingsIcon],
+];
+function NavButtons({ tab, go }) {
+    return NAV.map(([k, label, Icon]) => (React.createElement("button", { key: k, type: "button", className: "nav-item", "aria-current": tab === k ? "page" : undefined, onClick: () => go(k) },
+        React.createElement(Icon, { size: 22, "aria-hidden": "true" }),
+        label)));
+}
+const STARTERS = {
+    forex: { title: "Become consistently profitable in forex", unit: "backtested trades", total: 100, weekly: 20, daily: "30–60 min" },
+    reading: { title: "Read every day", unit: "hours", total: 60, weekly: 10, daily: "60–120 min" },
+    exercise: { title: "Build a fitness habit", unit: "sessions", total: 50, weekly: 4, daily: "30–45 min" },
+    school: { title: "Stay on top of school", unit: "study hours", total: 100, weekly: 8, daily: "1 h" },
+    business: { title: "Move my business forward", unit: "tasks", total: 40, weekly: 3, daily: "45 min" },
+    growth: { title: "Grow a little every week", unit: "sessions", total: 40, weekly: 5, daily: "20–30 min" },
+};
+function DayForgeApp() {
+    const [state, setState] = useState(null);
+    const [tab, setTab] = useState("today");
+    const [composer, setComposer] = useState(initialComposer());
+    const [now, setNow] = useState(new Date());
+    const [storageOk, setStorageOk] = useState(true);
+    const [storageKinds, setStorageKinds] = useState([]);
+    const [backupOpen, setBackupOpen] = useState(false);
+    const [persisted, setPersisted] = useState(false);
+    const live = useRef([]);
+    const [toasts, setToasts] = useState([]);
+    const [confirmState, setConfirmState] = useState(null);
+    const loaded = useRef(false);
+    const todayKey = dateKey(now);
+    useEffect(() => { const t = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(t); }, []);
+    useEffect(() => {
+        let alive = true;
+        (async () => {
+            const kinds = [];
+            for (const n of ["artifact", "local", "idb"])
+                if (await probeAdapter(n))
+                    kinds.push(n);
+            let persisted = false;
+            try {
+                if (navigator.storage && navigator.storage.persist)
+                    persisted = (await navigator.storage.persisted()) || (await navigator.storage.persist());
+            }
+            catch (e) {
+                persisted = false;
+            }
+            let data = null;
+            for (const n of kinds) {
+                try {
+                    const raw = await adapters[n].get(STORAGE_KEY);
+                    if (raw) {
+                        const d = JSON.parse(raw);
+                        if (!data || (d.savedAt || 0) > (data.savedAt || 0))
+                            data = d;
+                    }
+                }
+                catch (e) { /* nothing saved here yet */ }
+            }
+            if (!alive)
+                return;
+            const base = initialState();
+            const merged = data ? { ...base, ...data, user: { ...base.user, ...data.user }, prefs: { ...base.prefs, ...data.prefs } } : base;
+            live.current = kinds;
+            loaded.current = true;
+            setState(merged);
+            setStorageKinds(kinds);
+            setPersisted(!!persisted);
+            setStorageOk(kinds.length > 0);
+            setComposer((c) => ({ ...c, goals: merged.user.goals || [], view: merged.draft ? "result" : "form" }));
+        })();
+        return () => { alive = false; };
+    }, []);
+    useEffect(() => {
+        if (!state || !loaded.current)
+            return;
+        const t = setTimeout(async () => {
+            const payload = JSON.stringify({ ...state, savedAt: Date.now() });
+            let ok = [];
+            for (const n of live.current) {
+                try {
+                    await adapters[n].set(STORAGE_KEY, payload);
+                    ok.push(n);
+                }
+                catch (e) { /* try the others */ }
+            }
+            setStorageKinds(ok);
+            setStorageOk(ok.length > 0);
+        }, 500);
+        return () => clearTimeout(t);
+    }, [state]);
+    const update = useCallback((fn) => setState((s) => fn(s)), []);
+    const toast = useCallback((msg, type = "success") => {
+        const id = uid();
+        setToasts((t) => [...t, { id, msg, type }]);
+        setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200);
+    }, []);
+    const confirm = useCallback((o) => setConfirmState(o), []);
+    const go = useCallback((t) => { setTab(t); if (typeof window !== "undefined" && window.scrollTo)
+        window.scrollTo({ top: 0 }); }, []);
+    const fmt = useCallback((m) => fmtTime(m, state ? state.prefs.timeFormat : "12h"), [state && state.prefs.timeFormat]);
+    const behavior = useMemo(() => analyzeBehavior(state ? state.plans : {}, state ? state.journal : {}, todayKey), [state && state.plans, state && state.journal, todayKey]);
+    const runBuild = useCallback(async (input) => {
+        setComposer((c) => ({ ...c, view: "building", step: 0, error: null, lastInput: input }));
+        setTab("plan");
+        if (typeof window !== "undefined" && window.scrollTo)
+            window.scrollTo({ top: 0 });
+        const tick = setInterval(() => setComposer((c) => (c.view === "building" ? { ...c, step: Math.min(c.step + 1, 5) } : c)), 520);
+        try {
+            const [plan] = await Promise.all([aiService.planDay(input), sleepMs(2700)]);
+            clearInterval(tick);
+            update((s) => ({ ...s, draft: { plan, input } }));
+            setComposer((c) => ({ ...c, view: "result", step: 5 }));
+        }
+        catch (e) {
+            clearInterval(tick);
+            setComposer((c) => ({ ...c, view: "error", error: e && e.message ? e.message : "" }));
+        }
+    }, [update]);
+    const loadSample = useCallback(() => {
+        update((s) => {
+            const data = makeSampleData(todayKey, s.user, s.prefs);
+            return {
+                ...s,
+                plans: { ...data.plans, ...s.plans },
+                journal: { ...data.journal, ...s.journal },
+                goals: s.goals.length ? s.goals : data.goals,
+            };
+        });
+        toast("Sample data added");
+    }, [update, todayKey, toast]);
+    const removeSample = useCallback(() => {
+        update((s) => ({
+            ...s,
+            plans: Object.fromEntries(Object.entries(s.plans).filter(([, p]) => !p.sample)),
+            journal: Object.fromEntries(Object.entries(s.journal).filter(([, j]) => !j.sample)),
+            goals: s.goals.filter((g) => !g.sample),
+        }));
+        toast("Sample data removed");
+    }, [update, toast]);
+    const restoreBackup = useCallback((d) => {
+        const base = initialState();
+        update(() => ({ ...base, ...d, user: { ...base.user, ...d.user }, prefs: { ...base.prefs, ...d.prefs }, goals: d.goals || [], journal: d.journal || {} }));
+        setComposer(initialComposer());
+        setBackupOpen(false);
+        toast("Backup restored");
+    }, [update, toast]);
+    const resetAll = useCallback(() => {
+        update(() => initialState());
+        setComposer(initialComposer());
+        setTab("today");
+    }, [update]);
+    const finishOnboarding = (d) => {
+        const prefs = { ...state.prefs, forexMin: Math.max(25, r5(d.minutes * 0.55)), readingMin: Math.max(25, r5(d.minutes * 0.45)), exerciseMin: d.goals.includes("exercise") ? 45 : 30 };
+        const starter = d.goals.filter((g) => STARTERS[g]).map((g) => ({
+            id: uid(), title: STARTERS[g].title, why: "", targetDate: addDays(todayKey, 90), weeklyTarget: STARTERS[g].weekly,
+            unit: STARTERS[g].unit, total: STARTERS[g].total, dailyTarget: STARTERS[g].daily, habits: [], log: [],
+        }));
+        update((s) => ({ ...s, onboarded: true, user: { ...s.user, name: d.name.trim(), wake: d.wake, bed: d.bed, goals: d.goals, dailyGoalMin: d.minutes }, prefs, goals: starter }));
+        const target = now.getHours() < 12 ? "today" : "tomorrow";
+        setComposer((c) => ({ ...c, target, goals: d.goals }));
+        runBuild({ date: target === "today" ? todayKey : addDays(todayKey, 1), text: "", commitments: [], goals: d.goals, energy: "normal", wake: d.wake, bed: d.bed, prefs, behavior: {}, variant: 0, detected: [] });
+    };
+    const hasSample = !!state && (Object.values(state.plans).some((p) => p.sample) || Object.values(state.journal).some((j) => j.sample) || state.goals.some((g) => g.sample));
+    const theme = state ? state.prefs.theme : "dark";
+    const ctx = { state, update, toast, confirm, fmt, now, todayKey, go, composer, setComposer, runBuild, behavior, storageOk, storageKinds, persisted, openBackup: () => setBackupOpen(true), loadSample, removeSample, resetAll, hasSample };
+    const overlays = (React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "toasts", "aria-live": "polite", role: "status" }, toasts.map((t) => React.createElement("div", { key: t.id, className: `toast ${t.type}` },
+            t.type === "error" ? React.createElement(AlertTriangle, { size: 18, "aria-hidden": "true" }) : React.createElement(Check, { size: 18, "aria-hidden": "true" }),
+            t.msg))),
+        backupOpen && state && React.createElement(BackupModal, { state: state, onBackedUp: () => update((s) => ({ ...s, lastBackupAt: Date.now() })), onRestore: restoreBackup, onClose: () => setBackupOpen(false) }),
+        confirmState && (React.createElement(Modal, { title: confirmState.title, onClose: () => setConfirmState(null), footer: React.createElement(React.Fragment, null,
+                React.createElement(Btn, { variant: "ghost", onClick: () => setConfirmState(null) }, "Cancel"),
+                React.createElement(Btn, { variant: confirmState.danger ? "danger" : "primary", onClick: () => { const f = confirmState.onConfirm; setConfirmState(null); f(); } }, confirmState.confirmLabel || "Confirm")) },
+            React.createElement("p", { className: "muted" }, confirmState.message)))));
+    if (!state) {
+        return (React.createElement("div", { className: "df-root", "data-theme": "dark" },
+            React.createElement("style", null, CSS),
+            React.createElement("div", { className: "df-main", style: { marginLeft: 0 }, "aria-busy": "true", "aria-label": "Loading DayForge" },
+                React.createElement("div", { className: "df-page" },
+                    React.createElement("div", { className: "sk", style: { height: 44, width: "70%", marginBottom: 12 } }),
+                    React.createElement("div", { className: "sk", style: { height: 20, width: "40%", marginBottom: 28 } }),
+                    React.createElement("div", { className: "sk", style: { height: 130, marginBottom: 14 } }),
+                    React.createElement("div", { className: "sk", style: { height: 96, marginBottom: 14 } }),
+                    React.createElement("div", { className: "sk", style: { height: 96 } })))));
+    }
+    if (!state.onboarded) {
+        return (React.createElement(Ctx.Provider, { value: ctx },
+            React.createElement("div", { className: "df-root", "data-theme": theme },
+                React.createElement("style", null, CSS),
+                React.createElement(Onboarding, { onFinish: finishOnboarding }),
+                overlays)));
+    }
+    const screens = { today: TodayScreen, plan: PlanScreen, goals: GoalsScreen, progress: ProgressScreen, journal: JournalScreen, settings: SettingsScreen };
+    const Screen = screens[tab];
+    return (React.createElement(Ctx.Provider, { value: ctx },
+        React.createElement("div", { className: "df-root", "data-theme": theme },
+            React.createElement("style", null, CSS),
+            React.createElement("nav", { className: "df-side", "aria-label": "Main" },
+                React.createElement("p", { className: "brand" }, "DayForge"),
+                React.createElement("p", { className: "brand-tag" }, "Plan your day. Build yourself."),
+                React.createElement(NavButtons, { tab: tab, go: go }),
+                React.createElement("p", { className: "side-foot" }, "Planner: local rules engine. No AI API connected.")),
+            React.createElement("main", { className: "df-main" },
+                !storageOk && (React.createElement("div", { className: "df-page" },
+                    React.createElement("div", { className: "sec warn small", role: "status", style: { marginTop: 0, marginBottom: 18 } },
+                        React.createElement("p", null, "This view can't save automatically, so your data will be lost when you close it. Back it up now, or open DayForge as a normal web page where saving works."),
+                        React.createElement(Btn, { size: "sm", variant: "primary", style: { marginTop: 12 }, onClick: () => setBackupOpen(true) }, "Back up my data")))),
+                storageOk && Object.keys(state.plans).length >= 3 && now.getTime() - (state.lastBackupAt || 0) > 14 * 86400000 && (React.createElement("div", { className: "df-page" },
+                    React.createElement("div", { className: "sec small", style: { marginTop: 0, marginBottom: 18 } },
+                        React.createElement("p", null, "It has been a while since your last backup. It takes 10 seconds and protects months of progress."),
+                        React.createElement(Btn, { size: "sm", style: { marginTop: 12 }, onClick: () => setBackupOpen(true) }, "Back up now")))),
+                React.createElement(Screen, null)),
+            React.createElement("nav", { className: "df-bottom", "aria-label": "Main" },
+                React.createElement(NavButtons, { tab: tab, go: go })),
+            overlays)));
+}
+class ErrorBoundary extends React.Component {
+    constructor(props) { super(props); this.state = { err: null }; }
+    static getDerivedStateFromError(err) { return { err }; }
+    render() {
+        if (!this.state.err)
+            return this.props.children;
+        return (React.createElement("div", { style: { padding: 24, maxWidth: 520, margin: "0 auto", color: "#E9ECF1", fontFamily: "-apple-system,BlinkMacSystemFont,sans-serif", lineHeight: 1.5 } },
+            React.createElement("h1", { style: { fontSize: 28, margin: "24px 0 8px" } }, "Something went wrong"),
+            React.createElement("p", { style: { color: "#98A2B1" } }, "DayForge hit an error and stopped. Your saved data has not been touched. Reload to continue. If it keeps happening, send the message below to get it fixed."),
+            React.createElement("pre", { style: { whiteSpace: "pre-wrap", background: "#1C232C", padding: 12, borderRadius: 12, fontSize: 13 } }, String(this.state.err && this.state.err.message ? this.state.err.message : this.state.err)),
+            React.createElement("button", { type: "button", onClick: () => window.location.reload(), style: { minHeight: 48, padding: "0 22px", borderRadius: 13, border: 0, background: "#E3B341", color: "#18130A", fontWeight: 700, fontSize: 16 } }, "Reload DayForge")));
+    }
+}
+function DayForge() {
+    return React.createElement(ErrorBoundary, null,
+        React.createElement(DayForgeApp, null));
+}
+createRoot(document.getElementById("root")).render(React.createElement(DayForge));
+
+</script>
+</body>
+</html>
